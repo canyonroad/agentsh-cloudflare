@@ -1,0 +1,20 @@
+{
+  "name": "agentsh-cloudflare",
+  "version": "0.1.0",
+  "description": "Cloudflare Sandbox with agentsh security for AI agent workloads",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build:container": "docker build -t agentsh-sandbox .",
+    "push:container": "docker tag agentsh-sandbox docker.cloudflare.com/$CF_ACCOUNT_ID/agentsh-sandbox && docker push docker.cloudflare.com/$CF_ACCOUNT_ID/agentsh-sandbox"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "^0.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240124.0",
+    "typescript": "^5.3.0",
+    "wrangler": "^3.24.0"
+  }
+}

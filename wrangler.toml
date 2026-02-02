@@ -1,0 +1,22 @@
+name = "agentsh-cloudflare"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Sandbox configuration
+[containers]
+dockerfile = "Dockerfile"
+memory = "4GB"
+vcpus = 1
+
+# Durable Objects for Sandbox state
+[[durable_objects.bindings]]
+name = "SANDBOX"
+class_name = "SandboxDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SandboxDO"]
+
+# Environment variables
+[vars]
+ENVIRONMENT = "development"

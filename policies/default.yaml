@@ -1,0 +1,351 @@
+# agentsh Security Policy for Cloudflare Sandbox Demo
+# Demonstrates command blocking, network control, and DLP
+
+version: 1
+name: default
+description: |
+  Security sandbox policy for AI agents running in Cloudflare containers.
+  Shows agentsh capabilities: command blocking, network control, file protection, DLP.
+
+# =============================================================================
+# FILE OPERATION RULES
+# =============================================================================
+
+file_rules:
+  # Workspace - full access
+  - name: allow-workspace
+    description: Allow full access to workspace
+    paths:
+      - "/workspace"
+      - "/workspace/**"
+    operations:
+      - "*"
+    decision: allow
+
+  # Temp directories - full access
+  - name: allow-tmp
+    description: Full access to temp directories
+    paths:
+      - "/tmp/**"
+      - "/var/tmp/**"
+    operations:
+      - "*"
+    decision: allow
+
+  # Home directory - full access for sandbox user
+  - name: allow-home
+    description: Allow home directory access
+    paths:
+      - "/home/sandbox/**"
+    operations:
+      - "*"
+    decision: allow
+
+  # Block dangerous binaries
+  - name: block-dangerous-binaries
+    description: Block execution of privilege escalation tools
+    paths:
+      - "/usr/bin/sudo"
+      - "/usr/bin/su"
+      - "/usr/bin/pkexec"
+      - "/usr/bin/doas"
+      - "/bin/su"
+      - "/usr/sbin/chroot"
+      - "/usr/bin/nsenter"
+      - "/usr/bin/unshare"
+    operations:
+      - "*"
+    decision: deny
+    message: "BLOCKED: Access to privilege escalation tool: {{.Path}}"
+
+  # System paths - read-only
+  - name: allow-system-read
+    description: Read access to system paths
+    paths:
+      - "/usr/**"
+      - "/lib/**"
+      - "/lib64/**"
+      - "/bin/**"
+      - "/sbin/**"
+    operations:
+      - read
+      - open
+      - stat
+      - list
+      - readlink
+    decision: allow
+
+  # Config files - minimal read
+  - name: allow-etc-minimal
+    description: Read minimal config files
+    paths:
+      - "/etc/hosts"
+      - "/etc/resolv.conf"
+      - "/etc/ssl/certs/**"
+      - "/etc/ca-certificates/**"
+      - "/etc/localtime"
+      - "/etc/passwd"
+      - "/etc/group"
+    operations:
+      - read
+      - stat
+    decision: allow
+
+  # Block sensitive paths
+  - name: block-sensitive
+    description: Block access to sensitive system files
+    paths:
+      - "/etc/shadow"
+      - "/etc/sudoers"
+      - "/etc/sudoers.d/**"
+    operations:
+      - "*"
+    decision: deny
+    message: "BLOCKED: Access to sensitive file: {{.Path}}"
+
+  # Default deny for everything else
+  - name: default-deny-files
+    description: Deny all other file operations
+    paths:
+      - "**"
+    operations:
+      - "*"
+    decision: deny
+
+# =============================================================================
+# NETWORK OPERATION RULES
+# =============================================================================
+
+network_rules:
+  # Allow localhost (needed for agentsh server, ttyd)
+  - name: allow-localhost
+    description: Allow localhost connections
+    cidrs:
+      - "127.0.0.1/32"
+      - "::1/128"
+    decision: allow
+
+  # Allow package registries
+  - name: allow-npm
+    description: npm registry
+    domains:
+      - "registry.npmjs.org"
+    ports: [443]
+    decision: allow
+
+  - name: allow-pypi
+    description: PyPI
+    domains:
+      - "pypi.org"
+      - "files.pythonhosted.org"
+    ports: [443]
+    decision: allow
+
+  - name: allow-github
+    description: GitHub (for git operations)
+    domains:
+      - "github.com"
+      - "api.github.com"
+    ports: [443]
+    decision: allow
+
+  # Block cloud metadata services (critical for cloud security)
+  - name: block-metadata-services
+    description: Block cloud metadata services (AWS, GCP, Azure, Alibaba)
+    cidrs:
+      - "169.254.169.254/32"  # AWS, GCP, Azure
+      - "100.100.100.200/32"  # Alibaba
+    decision: deny
+    message: "BLOCKED: Cloud metadata service access denied"
+
+  # Block private networks
+  - name: block-private-networks
+    description: Block internal/private networks
+    cidrs:
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+    decision: deny
+    message: "BLOCKED: Private network access denied"
+
+  # Block example malicious domain (for demo)
+  - name: block-evil-domains
+    description: Block known malicious domains
+    domains:
+      - "evil.com"
+      - "*.evil.com"
+      - "malware.example.com"
+    decision: deny
+    message: "BLOCKED: Connection to untrusted domain: {{.RemoteAddr}}"
+
+  # Allow common HTTPS (for demo purposes - in production would be more restrictive)
+  - name: allow-https
+    description: Allow general HTTPS connections
+    ports: [443]
+    decision: allow
+
+  # Default deny
+  - name: default-deny-network
+    description: Deny all other network connections
+    domains:
+      - "*"
+    decision: deny
+    message: "BLOCKED: Network connection denied"
+
+# =============================================================================
+# COMMAND RULES
+# =============================================================================
+
+command_rules:
+  # Allow safe commands
+  - name: allow-safe-commands
+    description: Standard safe commands
+    commands:
+      - bash
+      - sh
+      - /bin/bash
+      - /bin/sh
+      - ls
+      - cat
+      - head
+      - tail
+      - grep
+      - find
+      - wc
+      - sort
+      - uniq
+      - diff
+      - pwd
+      - echo
+      - date
+      - which
+      - whoami
+      - id
+      - env
+      - printenv
+      - clear
+      - history
+      - alias
+      - cd
+      - mkdir
+      - touch
+      - cp
+      - mv
+      - rm
+    decision: allow
+
+  # Allow development tools
+  - name: allow-dev-tools
+    description: Development tools
+    commands:
+      - git
+      - node
+      - npm
+      - npx
+      - python
+      - python3
+      - pip
+      - pip3
+      - curl
+      - wget
+    decision: allow
+
+  # Block network attack tools
+  - name: block-network-tools
+    description: Block raw network tools
+    commands:
+      - nc
+      - netcat
+      - ncat
+      - socat
+      - telnet
+      - nmap
+    decision: deny
+    message: "BLOCKED: Network tool '{{.Command}}' is not allowed"
+
+  # Block SSH
+  - name: block-ssh
+    description: Block SSH client
+    commands:
+      - ssh
+      - scp
+      - sftp
+      - rsync
+    decision: deny
+    message: "BLOCKED: SSH/remote access tool '{{.Command}}' is not allowed"
+
+  # Block privilege escalation
+  - name: block-privilege-escalation
+    description: Block privilege escalation commands
+    commands:
+      - sudo
+      - su
+      - doas
+      - pkexec
+      - chroot
+      - nsenter
+      - unshare
+    decision: deny
+    message: "BLOCKED: Privilege escalation via '{{.Command}}' is not allowed"
+
+  # Block system administration
+  - name: block-system-commands
+    description: Block system administration commands
+    commands:
+      - shutdown
+      - reboot
+      - poweroff
+      - halt
+      - init
+      - systemctl
+      - service
+      - mount
+      - umount
+      - fdisk
+      - mkfs
+      - dd
+    decision: deny
+    message: "BLOCKED: System command '{{.Command}}' is not allowed"
+
+  # Block process killing (protect agentsh)
+  - name: block-kill
+    description: Block process termination commands
+    commands:
+      - kill
+      - killall
+      - pkill
+    decision: deny
+    message: "BLOCKED: Process termination via '{{.Command}}' is not allowed"
+
+  # Allow everything else (for demo - in production would be more restrictive)
+  - name: allow-other
+    description: Allow other commands
+    commands:
+      - "*"
+    decision: allow
+
+# =============================================================================
+# RESOURCE LIMITS
+# =============================================================================
+
+resource_limits:
+  max_memory_mb: 2048
+  memory_swap_max_mb: 0
+  cpu_quota_percent: 50
+  pids_max: 100
+  command_timeout: 2m
+  session_timeout: 1h
+  idle_timeout: 15m
+
+# =============================================================================
+# AUDIT SETTINGS
+# =============================================================================
+
+audit:
+  log_allowed: true
+  log_denied: true
+  log_approved: true
+  include_stdout: true
+  include_stderr: true
+  include_file_content: false
+  retention_days: 7
