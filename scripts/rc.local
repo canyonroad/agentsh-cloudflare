@@ -1,0 +1,4 @@
+#!/bin/bash
+# Start agentsh server in background before other services
+/usr/bin/agentsh server --config /etc/agentsh/config.yaml &
+exit 0

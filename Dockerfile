@@ -5,7 +5,7 @@
 FROM docker.io/cloudflare/sandbox:0.7.0-python
 
 # Cache buster to force rebuild
-ARG CACHE_BUST=20260203-002
+ARG CACHE_BUST=20260203-012
 RUN echo "Cache bust: ${CACHE_BUST}"
 
 ARG AGENTSH_REPO=erans/agentsh
@@ -20,17 +20,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install additional dependencies needed for agentsh
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        jq \
         libseccomp2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and install latest agentsh release
+# Download and install agentsh release
+ARG AGENTSH_VERSION=0.9.0
 RUN set -eux; \
-    LATEST_TAG=$(curl -fsSL "https://api.github.com/repos/${AGENTSH_REPO}/releases/latest" | jq -r '.tag_name'); \
-    version="${LATEST_TAG#v}"; \
-    deb="agentsh_${version}_linux_${DEB_ARCH}.deb"; \
-    url="https://github.com/${AGENTSH_REPO}/releases/download/${LATEST_TAG}/${deb}"; \
-    echo "Downloading agentsh ${LATEST_TAG}: ${url}"; \
+    deb="agentsh_${AGENTSH_VERSION}_linux_${DEB_ARCH}.deb"; \
+    url="https://github.com/${AGENTSH_REPO}/releases/download/v${AGENTSH_VERSION}/${deb}"; \
+    echo "Downloading agentsh v${AGENTSH_VERSION}: ${url}"; \
     curl -fsSL -L "${url}" -o /tmp/agentsh.deb; \
     dpkg -i /tmp/agentsh.deb; \
     rm -f /tmp/agentsh.deb; \
@@ -52,10 +50,16 @@ COPY config/agentsh.yaml /etc/agentsh/config.yaml
 # Set ownership for agentsh directories (root user in this container)
 RUN chown -R root:root /var/lib/agentsh /var/log/agentsh /etc/agentsh
 
-# Note: We do NOT install the shell shim here because it requires the agentsh server to be running
-# In a production setup, you would:
-# 1. Start the agentsh server before starting the shell
-# 2. Or use a process supervisor (s6, tini) to manage both processes
-# 3. Or integrate with the container's init system
+# Install agentsh systemd service
+COPY systemd/agentsh.service /etc/systemd/system/agentsh.service
+RUN mkdir -p /etc/systemd/system/multi-user.target.wants && \
+    ln -sf /etc/systemd/system/agentsh.service /etc/systemd/system/multi-user.target.wants/agentsh.service
 
-# For this demo, agentsh is installed and can be used directly via 'agentsh run <command>'
+# Also add rc.local as fallback startup mechanism
+COPY scripts/rc.local /etc/rc.local
+RUN chmod +x /etc/rc.local
+
+# Enable rc-local.service for systemd to run rc.local at boot
+RUN mkdir -p /etc/systemd/system/rc-local.service.d && \
+    echo '[Install]\nWantedBy=multi-user.target' > /etc/systemd/system/rc-local.service.d/enable.conf && \
+    ln -sf /lib/systemd/system/rc-local.service /etc/systemd/system/multi-user.target.wants/rc-local.service

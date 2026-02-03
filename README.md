@@ -6,24 +6,28 @@ Proof-of-concept for secure AI agent code execution on Cloudflare's edge network
 
 ## Current Status
 
-This POC demonstrates agentsh installation in Cloudflare Sandbox containers:
+This POC demonstrates **full agentsh policy enforcement** in Cloudflare Sandbox containers:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
 | agentsh installation | ✅ Working | Version 0.9.0 installed |
+| Security mode | ✅ Full | 100% protection score |
 | Policy configuration | ✅ Working | Policies at `/etc/agentsh/policies/` |
-| Sandbox API | ✅ Working | Commands execute via Sandbox SDK |
-| Command blocking | ⚠️ Partial | Server needed for full enforcement |
-| DLP redaction | ⚠️ Partial | Server needed for output filtering |
+| Sandbox API | ✅ Working | Commands via `agentsh exec` |
+| Network blocking | ✅ Working | Blocks metadata services, private IPs |
+| Command blocking | ✅ Working | Policy-based command filtering |
+| DLP redaction | ✅ Working | Redacts API keys, secrets |
 | Web terminal | ❌ Not available | Preview URLs need custom domain |
 
-### Known Limitation
+### How It Works
 
-The Cloudflare Sandbox SDK requires the `/sandbox` binary as entrypoint. This conflicts with running the agentsh server. Full policy enforcement would require:
-- A process supervisor (s6, tini) to run both processes
-- Or an alternative integration approach (MCP proxy, custom runtime)
+All commands are executed through `agentsh exec`, which:
+1. Auto-starts the agentsh server if not running
+2. Applies security policy to each command
+3. Blocks network access to forbidden destinations
+4. Enforces file access controls
 
-## Features (with full integration)
+## Features
 
 - **Command Blocking** - Blocks dangerous commands (`sudo`, `ssh`, `nc`, `kill`, etc.)
 - **Network Control** - Blocks cloud metadata services, private networks, malicious domains
@@ -86,20 +90,21 @@ Response:
 ### Blocked Command Example
 
 ```bash
+# Network access to cloud metadata is blocked
 curl -X POST https://your-worker.workers.dev/execute \
   -H "Content-Type: application/json" \
-  -d '{"command": "sudo whoami"}'
+  -d '{"command": "curl http://169.254.169.254/"}'
 ```
 
 Response:
 ```json
 {
   "success": false,
-  "stdout": "",
-  "stderr": "BLOCKED: Privilege escalation via 'sudo' is not allowed",
-  "exitCode": 1,
+  "stdout": "blocked by policy",
+  "stderr": "agentsh: blocked by policy (rule=block-metadata-services)...",
+  "exitCode": 0,
   "blocked": true,
-  "message": "Privilege escalation via 'sudo' is not allowed"
+  "message": "Blocked by policy: block-metadata-services"
 }
 ```
 

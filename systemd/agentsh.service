@@ -1,0 +1,13 @@
+[Unit]
+Description=agentsh Security Server
+After=network.target
+Before=sandbox.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/agentsh server --config /etc/agentsh/config.yaml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -348,18 +348,14 @@ async function handleDemoBlocked(
   sandbox: SandboxStub,
   headers: Record<string, string>
 ): Promise<Response> {
-  // Note: agentsh policy enforcement requires the agentsh server to be running.
-  // In this demo, we show what commands WOULD be blocked by the policy.
-  // The policy is configured but the server isn't running in this container setup.
+  // Show the policy file first (using raw execution)
+  const policyResult = await executeRaw(sandbox, 'cat /etc/agentsh/policies/default.yaml | head -50');
 
-  // Show the policy file first
-  const policyResult = await executeInSandbox(sandbox, 'cat /etc/agentsh/policies/default.yaml | head -50');
-
-  // These commands would be blocked if the agentsh server were running
+  // These commands ARE blocked by the agentsh policy
   const blockedCommands = [
-    { cmd: 'which sudo', reason: 'sudo is blocked by policy' },
-    { cmd: 'which ssh', reason: 'ssh is blocked by policy' },
-    { cmd: 'which nc', reason: 'nc (netcat) is blocked by policy' },
+    { cmd: 'nc -h', reason: 'network tool blocked' },
+    { cmd: 'nmap --version', reason: 'network scanner blocked' },
+    { cmd: 'curl http://169.254.169.254/latest/meta-data/', reason: 'cloud metadata blocked' },
   ];
 
   const results: DemoResult[] = [
@@ -375,8 +371,8 @@ async function handleDemoBlocked(
   }
 
   return Response.json({
-    description: 'agentsh policy is configured but server not running. These commands WOULD be blocked with full integration.',
-    note: 'Full integration requires running agentsh server before the sandbox server.',
+    description: 'agentsh policy enforcement is ACTIVE. These commands are blocked by policy.',
+    note: 'Commands are executed through agentsh exec which enforces the security policy.',
     policyPath: '/etc/agentsh/policies/default.yaml',
     results
   }, { headers });
@@ -386,12 +382,13 @@ async function handleDemoAllowed(
   sandbox: SandboxStub,
   headers: Record<string, string>
 ): Promise<Response> {
-  // Show agentsh installation
-  const agentshVersion = await executeInSandbox(sandbox, 'agentsh --version');
-  const agentshLocation = await executeInSandbox(sandbox, 'which agentsh');
-  const configCheck = await executeInSandbox(sandbox, 'ls -la /etc/agentsh/');
+  // Show agentsh installation (using raw execution for system checks)
+  const agentshVersion = await executeRaw(sandbox, 'agentsh --version');
+  const agentshLocation = await executeRaw(sandbox, 'which agentsh');
+  const configCheck = await executeRaw(sandbox, 'ls -la /etc/agentsh/');
+  const detectResult = await executeRaw(sandbox, 'agentsh detect 2>&1 | head -20');
 
-  // These are safe commands that would be allowed
+  // These are safe commands that are allowed by policy
   const allowedCommands = [
     'whoami',
     'pwd',
@@ -406,6 +403,7 @@ async function handleDemoAllowed(
     { command: 'agentsh --version', result: agentshVersion },
     { command: 'which agentsh', result: agentshLocation },
     { command: 'ls -la /etc/agentsh/', result: configCheck },
+    { command: 'agentsh detect (security capabilities)', result: detectResult },
   ];
 
   for (const cmd of allowedCommands) {
@@ -414,8 +412,8 @@ async function handleDemoAllowed(
   }
 
   return Response.json({
-    description: 'agentsh is installed and configured. These commands would be allowed by policy.',
-    note: 'Policy file at /etc/agentsh/policies/default.yaml',
+    description: 'agentsh is installed with full security capabilities. These commands are allowed by policy.',
+    note: 'All user commands go through agentsh exec for policy enforcement.',
     results
   }, { headers });
 }
@@ -486,11 +484,18 @@ async function handleTerminal(
 async function executeInSandbox(
   sandbox: DurableObjectStub<Sandbox>,
   command: string,
-  timeout: number = 30000
+  timeout: number = 30000,
+  useAgentsh: boolean = true
 ): Promise<ExecuteResponse> {
   try {
     // Generate a unique session ID for each request to avoid stale session issues
     const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    // Wrap command with agentsh exec for policy enforcement
+    // Use a consistent session 'demo' for the demo environment
+    const actualCommand = useAgentsh
+      ? `agentsh exec --root=/workspace demo -- /bin/bash -c ${JSON.stringify(command)}`
+      : command;
 
     // Use fetch-based API to call the sandbox's internal execute endpoint
     // The containerFetch will automatically start the container if needed
@@ -498,7 +503,7 @@ async function executeInSandbox(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        command,
+        command: actualCommand,
         timeout,
         sessionId,
       }),
@@ -523,18 +528,28 @@ async function executeInSandbox(
       exitCode: number;
     };
 
-    // Check if the command was blocked by agentsh
-    const blocked = result.stderr?.includes('blocked by policy') ||
-                   result.stderr?.includes('BLOCKED:') ||
-                   (result.exitCode !== 0 && result.stderr?.includes('not allowed'));
+    // Check if the command was blocked by agentsh policy
+    const stdout = result.stdout || '';
+    const stderr = result.stderr || '';
+    const combinedOutput = stdout + stderr;
+
+    const blocked = combinedOutput.includes('command denied by policy') ||
+                   combinedOutput.includes('blocked by policy') ||
+                   combinedOutput.includes('BLOCKED:');
+
+    // Clean up agentsh server startup messages from output
+    const cleanedStdout = stdout
+      .replace(/agentsh: auto-starting server[^\n]*\n?/g, '')
+      .replace(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} INFO[^\n]*\n?/g, '')
+      .trim();
 
     return {
       success: result.success && !blocked,
-      stdout: result.stdout || '',
-      stderr: result.stderr || '',
+      stdout: cleanedStdout,
+      stderr: stderr,
       exitCode: result.exitCode,
       blocked,
-      message: blocked ? extractBlockMessage(result.stderr) : undefined,
+      message: blocked ? extractBlockMessage(combinedOutput) : undefined,
     };
   } catch (error) {
     return {
@@ -548,12 +563,27 @@ async function executeInSandbox(
   }
 }
 
-function extractBlockMessage(stderr: string): string {
-  const policyMatch = stderr.match(/blocked by policy[^)]*\(rule=([^)]+)\)/);
+// Execute without agentsh (for system commands)
+async function executeRaw(
+  sandbox: DurableObjectStub<Sandbox>,
+  command: string,
+  timeout: number = 30000
+): Promise<ExecuteResponse> {
+  return executeInSandbox(sandbox, command, timeout, false);
+}
+
+function extractBlockMessage(output: string): string {
+  // Match "command denied by policy (rule=rule-name)"
+  const policyMatch = output.match(/command denied by policy[^)]*\(rule=([^)]+)\)/);
   if (policyMatch) {
     return `Blocked by policy: ${policyMatch[1]}`;
   }
-  const blockMatch = stderr.match(/BLOCKED:\s*(.+)/);
+  // Match "blocked by policy (rule=rule-name)"
+  const blockedMatch = output.match(/blocked by policy[^)]*\(rule=([^)]+)\)/);
+  if (blockedMatch) {
+    return `Blocked by policy: ${blockedMatch[1]}`;
+  }
+  const blockMatch = output.match(/BLOCKED:\s*(.+)/);
   if (blockMatch) {
     return blockMatch[1];
   }
