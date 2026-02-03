@@ -1,14 +1,34 @@
 # agentsh on Cloudflare
 
-Secure AI agent code execution on Cloudflare's edge network using [agentsh](https://github.com/erans/agentsh) for policy enforcement.
+Proof-of-concept for secure AI agent code execution on Cloudflare's edge network using [agentsh](https://github.com/erans/agentsh).
 
-## Features
+**Live Demo**: https://agentsh-cloudflare.eran-cf2.workers.dev
+
+## Current Status
+
+This POC demonstrates agentsh installation in Cloudflare Sandbox containers:
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| agentsh installation | ✅ Working | Version 0.9.0 installed |
+| Policy configuration | ✅ Working | Policies at `/etc/agentsh/policies/` |
+| Sandbox API | ✅ Working | Commands execute via Sandbox SDK |
+| Command blocking | ⚠️ Partial | Server needed for full enforcement |
+| DLP redaction | ⚠️ Partial | Server needed for output filtering |
+| Web terminal | ❌ Not available | Preview URLs need custom domain |
+
+### Known Limitation
+
+The Cloudflare Sandbox SDK requires the `/sandbox` binary as entrypoint. This conflicts with running the agentsh server. Full policy enforcement would require:
+- A process supervisor (s6, tini) to run both processes
+- Or an alternative integration approach (MCP proxy, custom runtime)
+
+## Features (with full integration)
 
 - **Command Blocking** - Blocks dangerous commands (`sudo`, `ssh`, `nc`, `kill`, etc.)
 - **Network Control** - Blocks cloud metadata services, private networks, malicious domains
 - **DLP Protection** - Redacts API keys, tokens, and sensitive data
 - **File Protection** - Soft-deletes for recovery, blocks system file access
-- **Web Terminal** - Interactive terminal via ttyd with real-time policy enforcement
 
 ## Architecture
 

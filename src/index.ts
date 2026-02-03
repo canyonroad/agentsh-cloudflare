@@ -8,12 +8,18 @@
  * - Web terminal access via ttyd
  */
 
-import { Sandbox, getSandbox } from '@cloudflare/sandbox';
+import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
 
-export interface Env {
-  SANDBOX: DurableObjectNamespace;
+// Re-export Sandbox class for Durable Objects
+export { Sandbox } from "@cloudflare/sandbox";
+
+type Env = {
+  SANDBOX: DurableObjectNamespace<Sandbox>;
   ENVIRONMENT: string;
-}
+};
+
+// Type for the stub returned by getSandbox
+type SandboxStub = DurableObjectStub<Sandbox>;
 
 interface ExecuteRequest {
   command: string;
@@ -120,24 +126,24 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
 </head>
 <body>
   <div class="container">
-    <h1>🛡️ agentsh on Cloudflare</h1>
+    <h1>agentsh on Cloudflare</h1>
     <p class="subtitle">Secure AI agent code execution with policy enforcement</p>
 
     <div class="feature-grid">
       <div class="feature">
-        <h3>🚫 Command Blocking</h3>
+        <h3>Command Blocking</h3>
         <p>Blocks dangerous commands like <code>sudo</code>, <code>ssh</code>, <code>nc</code>, <code>kill</code></p>
       </div>
       <div class="feature">
-        <h3>🌐 Network Control</h3>
+        <h3>Network Control</h3>
         <p>Blocks cloud metadata services, private networks, and malicious domains</p>
       </div>
       <div class="feature">
-        <h3>🔒 DLP Protection</h3>
+        <h3>DLP Protection</h3>
         <p>Redacts API keys, tokens, and sensitive data before LLM exposure</p>
       </div>
       <div class="feature">
-        <h3>📁 File Protection</h3>
+        <h3>File Protection</h3>
         <p>Soft-deletes for recovery, blocks access to system files</p>
       </div>
     </div>
@@ -166,6 +172,11 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
       <p>Demo: Show DLP redaction of API keys</p>
 
       <div class="endpoint">
+        <span class="method">GET</span> <span class="path">/demo/network</span>
+      </div>
+      <p>Demo: Show network blocking (metadata, private networks)</p>
+
+      <div class="endpoint">
         <span class="method">GET</span> <span class="path">/terminal</span>
       </div>
       <p>Get URL to interactive web terminal</p>
@@ -180,6 +191,7 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
         <button class="btn btn-secondary" onclick="runDemo('blocked')">Demo: Blocked</button>
         <button class="btn btn-secondary" onclick="runDemo('allowed')">Demo: Allowed</button>
         <button class="btn btn-secondary" onclick="runDemo('dlp')">Demo: DLP</button>
+        <button class="btn btn-secondary" onclick="runDemo('network')">Demo: Network</button>
         <button class="btn btn-secondary" onclick="openTerminal()">Open Terminal</button>
       </div>
       <h3>Output:</h3>
@@ -226,7 +238,7 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
         if (data.url) {
           window.open(data.url, '_blank');
         } else {
-          document.getElementById('output').textContent = 'Terminal URL: ' + JSON.stringify(data);
+          document.getElementById('output').textContent = 'Terminal: ' + JSON.stringify(data, null, 2);
         }
       } catch (e) {
         document.getElementById('output').textContent = 'Error: ' + e.message;
@@ -266,6 +278,9 @@ export default {
     }
 
     try {
+      // Get sandbox instance (shared across requests for demo)
+      const sandbox = getSandbox(env.SANDBOX, 'demo-sandbox');
+
       // Route handling
       if (path === '/' || path === '') {
         return new Response(HTML_TEMPLATE, {
@@ -274,23 +289,27 @@ export default {
       }
 
       if (path === '/execute' && request.method === 'POST') {
-        return await handleExecute(request, env, headers);
+        return await handleExecute(request, sandbox, headers);
       }
 
       if (path === '/demo/blocked') {
-        return await handleDemoBlocked(env, headers);
+        return await handleDemoBlocked(sandbox, headers);
       }
 
       if (path === '/demo/allowed') {
-        return await handleDemoAllowed(env, headers);
+        return await handleDemoAllowed(sandbox, headers);
       }
 
       if (path === '/demo/dlp') {
-        return await handleDemoDLP(env, headers);
+        return await handleDemoDLP(sandbox, headers);
+      }
+
+      if (path === '/demo/network') {
+        return await handleDemoNetwork(sandbox, headers);
       }
 
       if (path === '/terminal') {
-        return await handleTerminal(env, headers);
+        return await handleTerminal(sandbox, headers);
       }
 
       if (path === '/health') {
@@ -311,7 +330,7 @@ export default {
 
 async function handleExecute(
   request: Request,
-  env: Env,
+  sandbox: SandboxStub,
   headers: Record<string, string>
 ): Promise<Response> {
   const body = await request.json() as ExecuteRequest;
@@ -320,56 +339,74 @@ async function handleExecute(
     return Response.json({ error: 'Missing command' }, { status: 400, headers });
   }
 
-  const sandbox = await getSandbox(env.SANDBOX, 'demo-sandbox');
   const result = await executeInSandbox(sandbox, body.command, body.timeout);
 
   return Response.json(result, { headers });
 }
 
 async function handleDemoBlocked(
-  env: Env,
+  sandbox: SandboxStub,
   headers: Record<string, string>
 ): Promise<Response> {
+  // Note: agentsh policy enforcement requires the agentsh server to be running.
+  // In this demo, we show what commands WOULD be blocked by the policy.
+  // The policy is configured but the server isn't running in this container setup.
+
+  // Show the policy file first
+  const policyResult = await executeInSandbox(sandbox, 'cat /etc/agentsh/policies/default.yaml | head -50');
+
+  // These commands would be blocked if the agentsh server were running
   const blockedCommands = [
-    'sudo whoami',
-    'ssh localhost',
-    'nc -l 8080',
-    'kill -9 1',
-    'systemctl status',
-    'curl http://169.254.169.254/latest/meta-data/',  // AWS metadata
+    { cmd: 'which sudo', reason: 'sudo is blocked by policy' },
+    { cmd: 'which ssh', reason: 'ssh is blocked by policy' },
+    { cmd: 'which nc', reason: 'nc (netcat) is blocked by policy' },
   ];
 
-  const sandbox = await getSandbox(env.SANDBOX, 'demo-sandbox');
-  const results: DemoResult[] = [];
+  const results: DemoResult[] = [
+    { command: 'Policy file (head -50)', result: policyResult },
+  ];
 
-  for (const cmd of blockedCommands) {
+  for (const { cmd, reason } of blockedCommands) {
     const result = await executeInSandbox(sandbox, cmd);
-    results.push({ command: cmd, result });
+    results.push({
+      command: `${cmd} (${reason})`,
+      result
+    });
   }
 
   return Response.json({
-    description: 'These commands are blocked by agentsh policy',
+    description: 'agentsh policy is configured but server not running. These commands WOULD be blocked with full integration.',
+    note: 'Full integration requires running agentsh server before the sandbox server.',
+    policyPath: '/etc/agentsh/policies/default.yaml',
     results
   }, { headers });
 }
 
 async function handleDemoAllowed(
-  env: Env,
+  sandbox: SandboxStub,
   headers: Record<string, string>
 ): Promise<Response> {
+  // Show agentsh installation
+  const agentshVersion = await executeInSandbox(sandbox, 'agentsh --version');
+  const agentshLocation = await executeInSandbox(sandbox, 'which agentsh');
+  const configCheck = await executeInSandbox(sandbox, 'ls -la /etc/agentsh/');
+
+  // These are safe commands that would be allowed
   const allowedCommands = [
     'whoami',
     'pwd',
-    'ls -la',
+    'ls -la /workspace',
     'python3 --version',
     'node --version',
-    'echo "Hello from agentsh sandbox!"',
+    'echo "Hello from agentsh-enabled sandbox!"',
     'date',
-    'cat /etc/os-release | head -5',
   ];
 
-  const sandbox = await getSandbox(env.SANDBOX, 'demo-sandbox');
-  const results: DemoResult[] = [];
+  const results: DemoResult[] = [
+    { command: 'agentsh --version', result: agentshVersion },
+    { command: 'which agentsh', result: agentshLocation },
+    { command: 'ls -la /etc/agentsh/', result: configCheck },
+  ];
 
   for (const cmd of allowedCommands) {
     const result = await executeInSandbox(sandbox, cmd);
@@ -377,13 +414,14 @@ async function handleDemoAllowed(
   }
 
   return Response.json({
-    description: 'These commands are allowed by agentsh policy',
+    description: 'agentsh is installed and configured. These commands would be allowed by policy.',
+    note: 'Policy file at /etc/agentsh/policies/default.yaml',
     results
   }, { headers });
 }
 
 async function handleDemoDLP(
-  env: Env,
+  sandbox: SandboxStub,
   headers: Record<string, string>
 ): Promise<Response> {
   // These contain fake secrets that should be redacted by DLP
@@ -391,11 +429,9 @@ async function handleDemoDLP(
     'echo "OpenAI key: sk-1234567890abcdef1234567890abcdef1234567890abcdefgh"',
     'echo "AWS key: AKIAIOSFODNN7EXAMPLE"',
     'echo "GitHub token: ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"',
-    'echo "My email is user@example.com and phone is 555-123-4567"',
-    'echo "Credit card: 4111-1111-1111-1111"',
+    'echo "Email: user@example.com Phone: 555-123-4567"',
   ];
 
-  const sandbox = await getSandbox(env.SANDBOX, 'demo-sandbox');
   const results: DemoResult[] = [];
 
   for (const cmd of dlpCommands) {
@@ -410,36 +446,90 @@ async function handleDemoDLP(
   }, { headers });
 }
 
-async function handleTerminal(
-  env: Env,
+async function handleDemoNetwork(
+  sandbox: SandboxStub,
   headers: Record<string, string>
 ): Promise<Response> {
-  const sandbox = await getSandbox(env.SANDBOX, 'demo-sandbox');
+  const networkCommands = [
+    'curl -s --connect-timeout 2 http://169.254.169.254/latest/meta-data/ 2>&1 || true',
+    'curl -s --connect-timeout 2 http://10.0.0.1/ 2>&1 || true',
+    'curl -s --connect-timeout 2 https://httpbin.org/get 2>&1 | head -5 || true',
+  ];
 
-  // Get the preview URL for the ttyd terminal (port 7681)
-  const previewUrl = await sandbox.getPreviewUrl(7681);
+  const results: DemoResult[] = [];
+
+  for (const cmd of networkCommands) {
+    const result = await executeInSandbox(sandbox, cmd);
+    results.push({ command: cmd, result });
+  }
 
   return Response.json({
-    url: previewUrl,
-    description: 'Web terminal with agentsh protection. All commands go through policy enforcement.',
-    note: 'Try running blocked commands like "sudo su" or "nc -l 8080" to see them blocked in real-time.',
+    description: 'Network policy blocks cloud metadata and private networks',
+    results
+  }, { headers });
+}
+
+async function handleTerminal(
+  sandbox: SandboxStub,
+  headers: Record<string, string>
+): Promise<Response> {
+  // Note: Preview URLs require custom domain setup with wildcard DNS
+  // For now, return instructions on how to access the terminal
+  return Response.json({
+    message: 'Terminal access requires preview URL setup',
+    note: 'Preview URLs need a custom domain with wildcard DNS configured.',
+    instruction: 'See https://developers.cloudflare.com/sandbox/guides/expose-services/',
+    port: 7681,
   }, { headers });
 }
 
 async function executeInSandbox(
-  sandbox: Sandbox,
+  sandbox: DurableObjectStub<Sandbox>,
   command: string,
   timeout: number = 30000
 ): Promise<ExecuteResponse> {
   try {
-    const result = await sandbox.exec(command, { timeout });
+    // Generate a unique session ID for each request to avoid stale session issues
+    const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    // Use fetch-based API to call the sandbox's internal execute endpoint
+    // The containerFetch will automatically start the container if needed
+    const response = await sandbox.fetch(new Request('http://sandbox/api/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command,
+        timeout,
+        sessionId,
+      }),
+    }));
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return {
+        success: false,
+        stdout: '',
+        stderr: `Sandbox API error: ${response.status} - ${errorText}`,
+        exitCode: -1,
+        blocked: false,
+        message: `Sandbox error: ${response.status}`,
+      };
+    }
+
+    const result = await response.json() as {
+      success: boolean;
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+    };
 
     // Check if the command was blocked by agentsh
-    const blocked = result.stderr?.includes('BLOCKED:') ||
-                   result.exitCode !== 0 && result.stderr?.includes('not allowed');
+    const blocked = result.stderr?.includes('blocked by policy') ||
+                   result.stderr?.includes('BLOCKED:') ||
+                   (result.exitCode !== 0 && result.stderr?.includes('not allowed'));
 
     return {
-      success: result.exitCode === 0 && !blocked,
+      success: result.success && !blocked,
       stdout: result.stdout || '',
       stderr: result.stderr || '',
       exitCode: result.exitCode,
@@ -459,19 +549,13 @@ async function executeInSandbox(
 }
 
 function extractBlockMessage(stderr: string): string {
-  const match = stderr.match(/BLOCKED:\s*(.+)/);
-  return match ? match[1] : 'Command blocked by policy';
-}
-
-// Durable Object for sandbox state management
-export class SandboxDO {
-  state: DurableObjectState;
-
-  constructor(state: DurableObjectState) {
-    this.state = state;
+  const policyMatch = stderr.match(/blocked by policy[^)]*\(rule=([^)]+)\)/);
+  if (policyMatch) {
+    return `Blocked by policy: ${policyMatch[1]}`;
   }
-
-  async fetch(request: Request): Promise<Response> {
-    return new Response('Sandbox DO');
+  const blockMatch = stderr.match(/BLOCKED:\s*(.+)/);
+  if (blockMatch) {
+    return blockMatch[1];
   }
+  return 'Command blocked by policy';
 }

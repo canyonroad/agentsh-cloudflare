@@ -1,37 +1,28 @@
 # Cloudflare Sandbox with agentsh - Secure AI Agent Execution
-# Includes agentsh for policy enforcement and ttyd for web terminal
+# Extends the official Cloudflare Sandbox image with agentsh policy enforcement
 
-FROM ubuntu:22.04
+# Use Cloudflare's Python sandbox image as base (includes Python 3.11, Node.js 20, Bun)
+FROM docker.io/cloudflare/sandbox:0.7.0-python
+
+# Cache buster to force rebuild
+ARG CACHE_BUST=20260203-002
+RUN echo "Cache bust: ${CACHE_BUST}"
 
 ARG AGENTSH_REPO=erans/agentsh
 ARG DEB_ARCH=amd64
 
+# Switch to root for installation
+USER root
+
 # Prevent interactive prompts during install
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install base dependencies
+# Install additional dependencies needed for agentsh
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        wget \
         jq \
-        git \
-        bash \
-        dash \
         libseccomp2 \
-        python3 \
-        python3-pip \
-        nodejs \
-        npm \
     && rm -rf /var/lib/apt/lists/*
-
-# Save original dash for startup (before shim might affect it)
-RUN cp /bin/dash /bin/dash.orig
-
-# Install ttyd for web terminal
-RUN curl -fsSL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 -o /usr/local/bin/ttyd && \
-    chmod +x /usr/local/bin/ttyd
 
 # Download and install latest agentsh release
 RUN set -eux; \
@@ -58,65 +49,13 @@ RUN mkdir -p /etc/agentsh/policies \
 COPY policies/default.yaml /etc/agentsh/policies/default.yaml
 COPY config/agentsh.yaml /etc/agentsh/config.yaml
 
-# Create non-root user for sandbox
-RUN useradd -m -s /bin/bash sandbox && \
-    chown -R sandbox:sandbox /var/lib/agentsh /var/log/agentsh
+# Set ownership for agentsh directories (root user in this container)
+RUN chown -R root:root /var/lib/agentsh /var/log/agentsh /etc/agentsh
 
-# Create workspace directory (BEFORE shim install)
-RUN mkdir -p /workspace && chown sandbox:sandbox /workspace
+# Note: We do NOT install the shell shim here because it requires the agentsh server to be running
+# In a production setup, you would:
+# 1. Start the agentsh server before starting the shell
+# 2. Or use a process supervisor (s6, tini) to manage both processes
+# 3. Or integrate with the container's init system
 
-# Create startup script that runs agentsh server and ttyd (BEFORE shim install)
-# Uses /bin/dash.orig (unshimmed) to start services, then ttyd spawns bash (shimmed)
-COPY <<'EOF' /usr/local/bin/start.sh
-#!/bin/dash.orig
-set -e
-
-echo "Starting agentsh server..."
-/usr/bin/agentsh server &
-AGENTSH_PID=$!
-
-# Wait for agentsh server to be ready
-echo "Waiting for agentsh server..."
-sleep 3
-
-# Verify server is running
-if ! kill -0 $AGENTSH_PID 2>/dev/null; then
-    echo "ERROR: agentsh server failed to start"
-    exit 1
-fi
-
-echo "agentsh server ready (PID: $AGENTSH_PID)"
-echo "Starting ttyd web terminal on port 7681..."
-
-# Start ttyd web terminal on port 7681
-# -W: Writable (allow input)
-# -t: Terminal type
-# The bash shell will be intercepted by agentsh shim
-exec /usr/local/bin/ttyd -W -p 7681 -t fontSize=14 -t theme='{"background": "#1e1e1e"}' /bin/bash
-EOF
-
-RUN chmod +x /usr/local/bin/start.sh
-
-# Install the shell shim LAST - replaces /bin/bash with agentsh interceptor
-# All commands after this will go through agentsh policy enforcement
-# No RUN commands should come after this!
-RUN agentsh shim install-shell \
-    --root / \
-    --shim /usr/bin/agentsh-shell-shim \
-    --bash \
-    --i-understand-this-modifies-the-host
-
-# Configure agentsh for runtime
-ENV AGENTSH_SERVER=http://127.0.0.1:8080
-
-# Expose ports
-# 3000 - Sandbox SDK API (internal)
-# 7681 - ttyd web terminal
-EXPOSE 3000 7681
-
-# Switch to non-root user
-USER sandbox
-WORKDIR /workspace
-
-# Start services using dash.orig (unshimmed)
-CMD ["/bin/dash.orig", "/usr/local/bin/start.sh"]
+# For this demo, agentsh is installed and can be used directly via 'agentsh run <command>'
