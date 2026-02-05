@@ -497,6 +497,7 @@ Try these examples:
       <a href="https://www.agentsh.org?${utmAgentsh}">agentsh.org</a>
       <a href="https://www.agentsh.org/docs?${utmAgentsh}">Documentation</a>
       <a href="https://github.com/canyonroad/agentsh?${utmAgentsh}">GitHub</a>
+      <a href="https://github.com/canyonroad/agentsh-cloudflare?${utmAgentsh}">This Demo's Source</a>
     </div>
     <p class="footer-credit">by <a href="https://www.canyonroad.ai?${utmCanyonRoad}">Canyon Road</a></p>
   </footer>
