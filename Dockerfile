@@ -5,10 +5,10 @@
 FROM docker.io/cloudflare/sandbox:0.7.0-python
 
 # Cache buster to force rebuild
-ARG CACHE_BUST=20260203-012
+ARG CACHE_BUST=20260203-018
 RUN echo "Cache bust: ${CACHE_BUST}"
 
-ARG AGENTSH_REPO=erans/agentsh
+ARG AGENTSH_REPO=canyonroad/agentsh
 ARG DEB_ARCH=amd64
 
 # Switch to root for installation

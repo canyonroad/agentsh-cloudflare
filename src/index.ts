@@ -388,15 +388,16 @@ async function handleDemoAllowed(
   const configCheck = await executeRaw(sandbox, 'ls -la /etc/agentsh/');
   const detectResult = await executeRaw(sandbox, 'agentsh detect 2>&1 | head -20');
 
+  // Check config file for FUSE setting BEFORE running agentsh exec
+  const fuseConfig = await executeRaw(sandbox, 'cat /etc/agentsh/config.yaml | grep -A2 fuse');
+
+  // Check if there's a timeout issue with agentsh exec
+  const agentshExecDebug = await executeRaw(sandbox, 'timeout 5 agentsh exec --root=/workspace demo -- echo hello 2>&1 || echo "TIMEOUT or ERROR: $?"');
+
   // These are safe commands that are allowed by policy
   const allowedCommands = [
     'whoami',
     'pwd',
-    'ls -la /workspace',
-    'python3 --version',
-    'node --version',
-    'echo "Hello from agentsh-enabled sandbox!"',
-    'date',
   ];
 
   const results: DemoResult[] = [
@@ -404,6 +405,8 @@ async function handleDemoAllowed(
     { command: 'which agentsh', result: agentshLocation },
     { command: 'ls -la /etc/agentsh/', result: configCheck },
     { command: 'agentsh detect (security capabilities)', result: detectResult },
+    { command: 'fuse config check', result: fuseConfig },
+    { command: 'agentsh exec test (with timeout)', result: agentshExecDebug },
   ];
 
   for (const cmd of allowedCommands) {
@@ -493,6 +496,7 @@ async function executeInSandbox(
 
     // Wrap command with agentsh exec for policy enforcement
     // Use a consistent session 'demo' for the demo environment
+    // agentsh exec auto-starts the server if needed
     const actualCommand = useAgentsh
       ? `agentsh exec --root=/workspace demo -- /bin/bash -c ${JSON.stringify(command)}`
       : command;

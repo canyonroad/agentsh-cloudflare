@@ -41,7 +41,7 @@ sandbox:
     max_processes: 100
 
   fuse:
-    enabled: false  # Not available in container
+    enabled: false  # Disabled - causes container crash in Firecracker
 
   network:
     enabled: true
@@ -52,7 +52,7 @@ sandbox:
     enabled: false  # Typically read-only in containers
 
   seccomp:
-    enabled: false  # Requires privileged mode
+    enabled: false  # Disabled - requires privileged mode
 
 proxy:
   mode: "embedded"

@@ -1,38 +1,79 @@
 # agentsh on Cloudflare
 
-Proof-of-concept for secure AI agent code execution on Cloudflare's edge network using [agentsh](https://github.com/erans/agentsh).
+Proof-of-concept for secure AI agent code execution on Cloudflare's edge network using [agentsh](https://github.com/canyonroad/agentsh).
 
 **Live Demo**: https://agentsh-cloudflare.eran-cf2.workers.dev
 
 ## Current Status
 
-This POC demonstrates **full agentsh policy enforcement** in Cloudflare Sandbox containers:
+This POC demonstrates **agentsh policy enforcement** in Cloudflare Sandbox containers running on Firecracker VMs:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
 | agentsh installation | ✅ Working | Version 0.9.0 installed |
-| Security mode | ✅ Full | 100% protection score |
+| Security mode | ✅ Full | 100% protection score detected |
 | Policy configuration | ✅ Working | Policies at `/etc/agentsh/policies/` |
 | Sandbox API | ✅ Working | Commands via `agentsh exec` |
-| Network blocking | ✅ Working | Blocks metadata services, private IPs |
-| Command blocking | ✅ Working | Policy-based command filtering |
-| DLP redaction | ✅ Working | Redacts API keys, secrets |
+| Network: Metadata blocking | ✅ Working | Blocks `169.254.169.254`, `100.100.100.200` |
+| Network: Private IP blocking | ✅ Working | Blocks `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` |
+| Network: External access | ✅ Working | Allowed domains accessible |
+| File IO blocking | ❌ Not working | FUSE causes container crash (see Limitations) |
+| DLP redaction | ❌ Not on stdout | DLP is for API proxy traffic, not command output |
 | Web terminal | ❌ Not available | Preview URLs need custom domain |
+
+### Security Capabilities Detected
+
+The Cloudflare Sandbox (Firecracker VM) reports the following kernel capabilities:
+
+```
+Security Mode: full
+Protection Score: 100%
+
+CAPABILITIES
+  capabilities_drop        ✓
+  cgroups_v2               ✓
+  ebpf                     ✓
+  fuse                     ✓ (detected but unusable - see Limitations)
+  landlock_abi             ✓ (v0)
+  seccomp                  ✓
+  seccomp_basic            ✓
+  seccomp_user_notify      ✓
+  landlock                 -
+  landlock_network         -
+  pid_namespace            -
+```
 
 ### How It Works
 
 All commands are executed through `agentsh exec`, which:
 1. Auto-starts the agentsh server if not running
 2. Applies security policy to each command
-3. Blocks network access to forbidden destinations
-4. Enforces file access controls
+3. Blocks network access to forbidden destinations via eBPF/proxy interception
+4. Returns policy violation messages for blocked operations
+
+## Limitations
+
+### FUSE / File IO Blocking
+
+While the kernel reports FUSE support (`/dev/fuse` exists), actually mounting a FUSE filesystem causes the Firecracker container to hang and disconnect. This is likely due to:
+- Privilege restrictions in Cloudflare's container runtime
+- Firecracker VM limitations on FUSE operations
+
+**Impact**: File system interception is not available. Commands can write to any location the user has permissions for (including `/etc/`).
+
+### DLP Redaction
+
+DLP (Data Loss Prevention) is configured but only applies to traffic through the agentsh API proxy, not to command stdout. Echoing API keys or secrets will show them in plain text.
+
+### Web Terminal
+
+The web terminal (ttyd) requires Cloudflare Preview URLs with custom domain and wildcard DNS configuration.
 
 ## Features
 
-- **Command Blocking** - Blocks dangerous commands (`sudo`, `ssh`, `nc`, `kill`, etc.)
 - **Network Control** - Blocks cloud metadata services, private networks, malicious domains
-- **DLP Protection** - Redacts API keys, tokens, and sensitive data
-- **File Protection** - Soft-deletes for recovery, blocks system file access
+- **Policy Enforcement** - Commands run through agentsh exec with policy checks
+- **eBPF + Seccomp** - Kernel-level security primitives available
 
 ## Architecture
 
@@ -41,18 +82,14 @@ All commands are executed through `agentsh exec`, which:
 │                    Cloudflare Edge                          │
 │  ┌─────────────────┐      ┌─────────────────────────────┐  │
 │  │  Worker (API)   │─────▶│  Sandbox Container          │  │
-│  │                 │      │                             │  │
+│  │                 │      │  (Firecracker VM)           │  │
 │  │  POST /execute  │      │  ┌─────────────────────────┐│  │
 │  │  GET /demo/*    │      │  │  agentsh                ││  │
-│  │  GET /terminal  │      │  │  ├─ policy enforcement  ││  │
-│  │                 │      │  │  ├─ command interception││  │
-│  └─────────────────┘      │  │  └─ DLP redaction       ││  │
+│  │  GET /health    │      │  │  ├─ policy enforcement  ││  │
+│  │                 │      │  │  ├─ network blocking    ││  │
+│  └─────────────────┘      │  │  └─ eBPF + seccomp      ││  │
 │                           │  └─────────────────────────┘│  │
-│                           │                             │  │
-│                           │  ┌─────────────────────────┐│  │
-│                           │  │  ttyd (web terminal)    ││  │
-│                           │  └─────────────────────────┘│  │
-│                           └─────────────────────────────────┘
+│                           └─────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -64,14 +101,14 @@ All commands are executed through `agentsh exec`, which:
 | POST | `/execute` | Execute command in sandbox |
 | GET | `/demo/blocked` | Demo blocked commands |
 | GET | `/demo/allowed` | Demo allowed commands |
-| GET | `/demo/dlp` | Demo DLP redaction |
-| GET | `/terminal` | Get web terminal URL |
+| GET | `/demo/dlp` | Demo DLP (note: not working on stdout) |
+| GET | `/demo/network` | Demo network blocking |
 | GET | `/health` | Health check |
 
 ### Execute Command
 
 ```bash
-curl -X POST https://your-worker.workers.dev/execute \
+curl -X POST https://agentsh-cloudflare.eran-cf2.workers.dev/execute \
   -H "Content-Type: application/json" \
   -d '{"command": "ls -la"}'
 ```
@@ -80,18 +117,18 @@ Response:
 ```json
 {
   "success": true,
-  "stdout": "total 0\ndrwxr-xr-x 1 sandbox sandbox ...",
+  "stdout": "total 0\ndrwxr-xr-x 1 root root ...",
   "stderr": "",
   "exitCode": 0,
   "blocked": false
 }
 ```
 
-### Blocked Command Example
+### Network Blocking Examples
 
+**Cloud metadata (blocked):**
 ```bash
-# Network access to cloud metadata is blocked
-curl -X POST https://your-worker.workers.dev/execute \
+curl -X POST https://agentsh-cloudflare.eran-cf2.workers.dev/execute \
   -H "Content-Type: application/json" \
   -d '{"command": "curl http://169.254.169.254/"}'
 ```
@@ -105,6 +142,40 @@ Response:
   "exitCode": 0,
   "blocked": true,
   "message": "Blocked by policy: block-metadata-services"
+}
+```
+
+**Private network (blocked):**
+```bash
+curl -X POST https://agentsh-cloudflare.eran-cf2.workers.dev/execute \
+  -H "Content-Type: application/json" \
+  -d '{"command": "curl http://10.0.0.1/"}'
+```
+
+Response:
+```json
+{
+  "success": false,
+  "stdout": "blocked by policy",
+  "stderr": "agentsh: blocked by policy (rule=block-private-networks)...",
+  "blocked": true,
+  "message": "Blocked by policy: block-private-networks"
+}
+```
+
+**External site (allowed):**
+```bash
+curl -X POST https://agentsh-cloudflare.eran-cf2.workers.dev/execute \
+  -H "Content-Type: application/json" \
+  -d '{"command": "curl -s https://httpbin.org/get | head -3"}'
+```
+
+Response:
+```json
+{
+  "success": true,
+  "stdout": "{\n  \"args\": {}, \n  \"headers\": {",
+  "blocked": false
 }
 ```
 
@@ -147,101 +218,89 @@ Response:
 wrangler login
 ```
 
-### 2. Build and push container
-
-```bash
-# Set your account ID
-export CF_ACCOUNT_ID=your-account-id
-
-# Build
-docker build -t agentsh-sandbox .
-
-# Tag for Cloudflare registry
-docker tag agentsh-sandbox docker.cloudflare.com/$CF_ACCOUNT_ID/agentsh-sandbox
-
-# Push
-docker push docker.cloudflare.com/$CF_ACCOUNT_ID/agentsh-sandbox
-```
-
-### 3. Deploy Worker
+### 2. Deploy (builds and pushes container automatically)
 
 ```bash
 npm run deploy
 ```
 
+Note: If config changes aren't deploying, clear Docker cache:
+```bash
+docker builder prune -a -f
+```
+
+Then update `CACHE_BUST` in Dockerfile and redeploy.
+
 ## Security Policy
 
 The default policy (`policies/default.yaml`) enforces:
 
-### Blocked Commands
-- `sudo`, `su`, `doas`, `pkexec` (privilege escalation)
-- `ssh`, `scp`, `sftp`, `rsync` (remote access)
-- `nc`, `netcat`, `ncat`, `socat`, `telnet`, `nmap` (network tools)
-- `kill`, `killall`, `pkill` (process termination)
-- `shutdown`, `reboot`, `systemctl` (system administration)
-
-### Blocked Network Access
+### Blocked Network Access (Working)
 - Cloud metadata: `169.254.169.254`, `100.100.100.200`
 - Private networks: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
-- Malicious domains: `evil.com`, `malware.example.com`
+- Example malicious domains: `evil.com`, `malware.example.com`
 
-### DLP Patterns (Redacted)
-- API keys: OpenAI, Anthropic, AWS, GitHub
-- PII: Email, phone, credit card, SSN
-- Secrets: JWT tokens, private keys, Slack tokens
+### Blocked Commands (Configured but tools not installed)
+- `sudo`, `su`, `doas`, `pkexec` (not installed in container)
+- `ssh`, `scp`, `sftp`, `rsync` (not installed)
+- `nc`, `netcat`, `ncat`, `socat`, `telnet`, `nmap` (not installed)
 
 ### Allowed
 - Basic shell commands (`ls`, `cat`, `echo`, etc.)
-- Development tools (`git`, `python`, `node`, `npm`)
-- Package registries (npm, PyPI, GitHub)
+- Development tools (`python`, `node`, `bun`)
+- Network access to allowed destinations
 
-## Customization
+## Configuration
+
+### agentsh Config (`config/agentsh.yaml`)
+
+Key settings:
+```yaml
+server:
+  http:
+    addr: "127.0.0.1:18080"  # agentsh client default port
+
+sandbox:
+  enabled: true
+  allow_degraded: true
+  fuse:
+    enabled: false  # Disabled - causes container crash in Firecracker
+  network:
+    enabled: true
+    intercept_mode: "all"
+  cgroups:
+    enabled: false  # Read-only in containers
+  seccomp:
+    enabled: false  # Requires privileged mode
+```
 
 ### Modify Security Policy
 
-Edit `policies/default.yaml` to customize:
+Edit `policies/default.yaml` to customize network rules:
 
 ```yaml
-command_rules:
-  - name: block-custom-command
-    commands:
-      - my-dangerous-command
+network_rules:
+  - name: block-custom-domain
+    hosts:
+      - "*.malicious.com"
     decision: deny
-    message: "Custom block message"
+    message: "Access to malicious.com is blocked"
 ```
-
-### Adjust Resource Limits
-
-In `config/agentsh.yaml`:
-
-```yaml
-resource_limits:
-  max_memory_mb: 4096
-  cpu_quota_percent: 75
-  command_timeout: 5m
-```
-
-## Web Terminal
-
-The web terminal provides an interactive shell with real-time agentsh protection:
-
-1. Call `GET /terminal` to get the preview URL
-2. Open the URL in your browser
-3. Try commands - blocked ones will show `BLOCKED:` messages
 
 ## Troubleshooting
 
-### Container not starting
-- Check Docker logs: `docker logs <container-id>`
-- Verify agentsh server started: Look for "agentsh server started" in logs
+### Container disconnecting / commands timing out
+- Check if FUSE is enabled in config (should be `false`)
+- Increase timeout: `{"command": "...", "timeout": 60000}`
 
-### Commands timing out
-- Increase timeout in request: `{"command": "...", "timeout": 60000}`
-- Check sandbox resource limits in `config/agentsh.yaml`
+### Config changes not deploying
+- Clear Docker cache: `docker builder prune -a -f`
+- Update `CACHE_BUST` arg in Dockerfile
+- Redeploy: `npm run deploy`
 
-### Terminal not accessible
-- Ensure port 7681 is exposed in Dockerfile
-- For production, configure custom domain with wildcard DNS
+### Network blocking not working
+- Verify agentsh exec is wrapping commands (check Worker code)
+- Check policy file is correctly mounted at `/etc/agentsh/policies/`
 
 ## License
 
