@@ -41,7 +41,7 @@ sandbox:
     max_processes: 100
 
   fuse:
-    enabled: true  # v0.9.1: improved detection skips mount when CAP_SYS_ADMIN is missing
+    enabled: false  # Firecracker has CAP_SYS_ADMIN but seccomp blocks mount(); detection insufficient
 
   network:
     enabled: true
