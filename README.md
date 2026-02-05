@@ -98,19 +98,58 @@ The web terminal (ttyd) requires Cloudflare Preview URLs with custom domain and 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/` | Demo web interface |
-| POST | `/execute` | Execute command in sandbox |
-| GET | `/demo/blocked` | Demo blocked commands |
-| GET | `/demo/allowed` | Demo allowed commands |
-| GET | `/demo/dlp` | Demo DLP (note: not working on stdout) |
-| GET | `/demo/network` | Demo network blocking |
+| POST | `/execute` | Execute command (requires Turnstile token) |
+| GET | `/demo/cloud-metadata` | Multi-cloud metadata protection demo |
+| GET | `/demo/ssrf` | SSRF attack prevention demo |
+| GET | `/demo/devtools` | Development tools demo |
+| GET | `/demo/network` | Network blocking overview |
+| GET | `/demo/allowed` | Allowed commands demo |
+| GET | `/demo/blocked` | Policy file and blocked commands |
 | GET | `/health` | Health check |
 
+### Rate Limiting & Bot Protection
+
+The demo is protected against abuse:
+- **Rate limiting**: 10 requests per minute per IP
+- **Turnstile**: Cloudflare CAPTCHA required for `/execute` endpoint
+- Demo endpoints (`/demo/*`) work without Turnstile but are rate limited
+
+### Demo Endpoints
+
+#### Multi-Cloud Metadata Protection (`/demo/cloud-metadata`)
+
+Demonstrates blocking of instance metadata endpoints across all major cloud providers:
+- AWS EC2 (`169.254.169.254`)
+- Google Cloud (`metadata.google.internal`)
+- Azure IMDS (`169.254.169.254`)
+- DigitalOcean (`169.254.169.254`)
+- Alibaba Cloud (`100.100.100.200`)
+- Oracle Cloud (`169.254.169.254`)
+
+#### SSRF Attack Prevention (`/demo/ssrf`)
+
+Demonstrates blocking of Server-Side Request Forgery attack vectors:
+- All RFC 1918 private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
+- Link-local addresses (`169.254.0.0/16`)
+- Cloud metadata endpoints
+- Shows external HTTPS access is allowed for comparison
+
+#### Development Tools (`/demo/devtools`)
+
+Shows that normal development workflows work seamlessly:
+- Python 3.11, Node.js 20, Bun 1.3
+- Git operations
+- External API access (GitHub, httpbin)
+- Pipe operations and workspace access
+
 ### Execute Command
+
+Requires a valid Turnstile token when called programmatically:
 
 ```bash
 curl -X POST https://agentsh-cloudflare.eran-cf2.workers.dev/execute \
   -H "Content-Type: application/json" \
-  -d '{"command": "ls -la"}'
+  -d '{"command": "ls -la", "turnstileToken": "your-token"}'
 ```
 
 Response:
