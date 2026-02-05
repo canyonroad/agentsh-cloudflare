@@ -4,8 +4,7 @@
  * Demonstrates secure AI agent code execution with:
  * - Command blocking (sudo, ssh, nc, etc.)
  * - Network control (blocks metadata services, private networks)
- * - DLP (redacts API keys and sensitive data)
- * - Web terminal access via ttyd
+ * - Rate limiting and Turnstile protection
  */
 
 import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
@@ -15,7 +14,10 @@ export { Sandbox } from "@cloudflare/sandbox";
 
 type Env = {
   SANDBOX: DurableObjectNamespace<Sandbox>;
+  RATE_LIMIT: KVNamespace;
   ENVIRONMENT: string;
+  TURNSTILE_SITE_KEY: string;
+  TURNSTILE_SECRET_KEY: string;
 };
 
 // Type for the stub returned by getSandbox
@@ -24,6 +26,7 @@ type SandboxStub = DurableObjectStub<Sandbox>;
 interface ExecuteRequest {
   command: string;
   timeout?: number;
+  turnstileToken?: string;
 }
 
 interface ExecuteResponse {
@@ -40,177 +43,496 @@ interface DemoResult {
   result: ExecuteResponse;
 }
 
-// HTML template for the demo page
-const HTML_TEMPLATE = `<!DOCTYPE html>
+// Rate limiting config
+const RATE_LIMIT_WINDOW = 60; // seconds
+const RATE_LIMIT_MAX = 10; // requests per window
+
+// Get client IP from request
+function getClientIP(request: Request): string {
+  return request.headers.get('CF-Connecting-IP') ||
+         request.headers.get('X-Forwarded-For')?.split(',')[0] ||
+         'unknown';
+}
+
+// Check rate limit
+async function checkRateLimit(env: Env, ip: string): Promise<{ allowed: boolean; remaining: number }> {
+  const key = `rate:${ip}`;
+  const now = Math.floor(Date.now() / 1000);
+  const windowStart = now - (now % RATE_LIMIT_WINDOW);
+  const windowKey = `${key}:${windowStart}`;
+
+  const countStr = await env.RATE_LIMIT.get(windowKey);
+  const count = countStr ? parseInt(countStr, 10) : 0;
+
+  if (count >= RATE_LIMIT_MAX) {
+    return { allowed: false, remaining: 0 };
+  }
+
+  // Increment count
+  await env.RATE_LIMIT.put(windowKey, String(count + 1), {
+    expirationTtl: RATE_LIMIT_WINDOW * 2,
+  });
+
+  return { allowed: true, remaining: RATE_LIMIT_MAX - count - 1 };
+}
+
+// Verify Turnstile token
+async function verifyTurnstile(token: string, ip: string, secretKey: string): Promise<boolean> {
+  if (!secretKey) {
+    // Skip verification if no secret key configured (development mode)
+    return true;
+  }
+
+  const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      secret: secretKey,
+      response: token,
+      remoteip: ip,
+    }),
+  });
+
+  const result = await response.json() as { success: boolean };
+  return result.success;
+}
+
+// HTML template for the demo page - matches agentsh.org branding
+function getHtmlTemplate(turnstileSiteKey: string): string {
+  const turnstileEnabled = !!turnstileSiteKey;
+  const utmAgentsh = 'utm_source=cloudflare-demo&utm_medium=web&utm_campaign=agentsh-demo';
+  const utmCanyonRoad = 'utm_source=agentsh-cloudflare-demo&utm_medium=web&utm_campaign=agentsh-demo';
+
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>agentsh on Cloudflare - Demo</title>
+  <title>agentsh Live Demo - Secure AI Agent Execution on Cloudflare</title>
+  <meta name="description" content="Try agentsh live on Cloudflare. See syscall-level enforcement block dangerous commands and network access in real-time.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  ${turnstileEnabled ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : ''}
   <style>
-    * { box-sizing: border-box; }
+    :root {
+      --evergreen: #0E4A33;
+      --moss: #4FA36A;
+      --river: #1A8890;
+      --mist: #F4F8F6;
+      --white: #ffffff;
+      --pine-black: #06100C;
+      --deep-fir: #0A2A1F;
+      --clay: #C86A3E;
+      --sunlit: #E2B84A;
+      --border-subtle: #e2e8e5;
+      --terminal-bg: #0a1612;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
-      background: #0f0f0f;
-      color: #e0e0e0;
-      margin: 0;
-      padding: 20px;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--mist);
+      color: var(--pine-black);
       line-height: 1.6;
+      min-height: 100vh;
     }
-    .container { max-width: 1200px; margin: 0 auto; }
-    h1 { color: #f97316; margin-bottom: 10px; }
-    h2 { color: #22c55e; margin-top: 30px; }
-    .subtitle { color: #888; margin-bottom: 30px; }
-    .card {
-      background: #1a1a1a;
-      border: 1px solid #333;
-      border-radius: 8px;
-      padding: 20px;
-      margin: 15px 0;
+    .container { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
+
+    /* Header */
+    .header {
+      text-align: center;
+      margin-bottom: 48px;
     }
-    .endpoint {
-      background: #252525;
-      padding: 10px 15px;
-      border-radius: 4px;
-      margin: 10px 0;
-      font-family: monospace;
+    .logo-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      margin-bottom: 16px;
     }
-    .method { color: #22c55e; font-weight: bold; }
-    .path { color: #60a5fa; }
-    pre {
-      background: #000;
-      padding: 15px;
-      border-radius: 4px;
-      overflow-x: auto;
-      border: 1px solid #333;
+    .logo-mark {
+      width: 48px;
+      height: 48px;
+      background: var(--evergreen);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 600;
+      font-size: 20px;
     }
-    code { color: #f97316; }
-    .blocked { color: #ef4444; }
-    .allowed { color: #22c55e; }
-    .btn {
-      background: #f97316;
-      color: #000;
-      border: none;
-      padding: 10px 20px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-weight: bold;
-      margin: 5px;
+    .logo-text {
+      font-family: 'DM Serif Display', serif;
+      font-size: 32px;
+      color: var(--pine-black);
     }
-    .btn:hover { background: #fb923c; }
-    .btn-secondary { background: #333; color: #fff; }
-    .btn-secondary:hover { background: #444; }
-    #output {
-      background: #000;
-      padding: 15px;
-      border-radius: 4px;
-      min-height: 200px;
-      font-family: monospace;
-      white-space: pre-wrap;
-      border: 1px solid #333;
+    h1 {
+      font-family: 'DM Serif Display', serif;
+      font-size: 42px;
+      color: var(--pine-black);
+      margin-bottom: 12px;
+      font-weight: 400;
     }
+    .subtitle {
+      font-size: 18px;
+      color: var(--deep-fir);
+      opacity: 0.8;
+      max-width: 600px;
+      margin: 0 auto 8px;
+    }
+    .powered-by {
+      font-size: 14px;
+      color: var(--deep-fir);
+      opacity: 0.6;
+    }
+    .powered-by a {
+      color: var(--evergreen);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .powered-by a:hover { text-decoration: underline; }
+
+    /* Feature Grid */
     .feature-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 15px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 40px;
     }
     .feature {
-      background: #1a1a1a;
-      border: 1px solid #333;
-      border-radius: 8px;
-      padding: 15px;
+      background: var(--white);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 20px;
+      transition: transform 0.2s, box-shadow 0.2s;
     }
-    .feature h3 { color: #f97316; margin-top: 0; }
-    a { color: #60a5fa; }
+    .feature:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(14, 74, 51, 0.08);
+    }
+    .feature h3 {
+      font-family: 'DM Serif Display', serif;
+      font-size: 18px;
+      color: var(--evergreen);
+      margin-bottom: 8px;
+      font-weight: 400;
+    }
+    .feature p {
+      font-size: 14px;
+      color: var(--deep-fir);
+      opacity: 0.8;
+    }
+
+    /* Terminal Card */
+    h2 {
+      font-family: 'DM Serif Display', serif;
+      font-size: 28px;
+      color: var(--pine-black);
+      margin-bottom: 16px;
+      font-weight: 400;
+    }
+    .card {
+      background: var(--white);
+      border: 1px solid var(--border-subtle);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 32px;
+      box-shadow: 0 4px 16px rgba(14, 74, 51, 0.04);
+    }
+    .input-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    #command {
+      flex: 1;
+      padding: 12px 16px;
+      background: var(--mist);
+      border: 1px solid var(--border-subtle);
+      color: var(--pine-black);
+      border-radius: 8px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+    }
+    #command:focus {
+      outline: none;
+      border-color: var(--evergreen);
+      box-shadow: 0 0 0 3px rgba(14, 74, 51, 0.1);
+    }
+    #command::placeholder { color: var(--deep-fir); opacity: 0.5; }
+
+    .btn {
+      background: var(--evergreen);
+      color: var(--white);
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 14px;
+      transition: background 0.2s, transform 0.1s;
+    }
+    .btn:hover { background: var(--deep-fir); }
+    .btn:active { transform: scale(0.98); }
+    .btn:disabled { background: var(--border-subtle); cursor: not-allowed; color: var(--deep-fir); }
+    .btn-secondary {
+      background: var(--mist);
+      color: var(--evergreen);
+      border: 1px solid var(--border-subtle);
+    }
+    .btn-secondary:hover { background: var(--white); border-color: var(--evergreen); }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .turnstile-container { margin: 16px 0; }
+    .warning {
+      color: var(--sunlit);
+      font-size: 14px;
+      background: rgba(226, 184, 74, 0.1);
+      padding: 8px 12px;
+      border-radius: 6px;
+      margin: 12px 0;
+    }
+    .rate-limit-info {
+      font-size: 13px;
+      color: var(--deep-fir);
+      opacity: 0.6;
+      margin-bottom: 16px;
+    }
+
+    /* Terminal Output */
+    .output-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--deep-fir);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    #output {
+      background: var(--terminal-bg);
+      color: #e0e6e3;
+      padding: 20px;
+      border-radius: 12px;
+      min-height: 200px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      white-space: pre-wrap;
+      overflow-x: auto;
+      border: 1px solid rgba(79, 163, 106, 0.2);
+    }
+    #output .blocked { color: var(--clay); }
+    #output .allowed { color: var(--moss); }
+
+    /* API Section */
+    .endpoint {
+      background: var(--mist);
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin: 12px 0;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+    }
+    .method { color: var(--moss); font-weight: 600; }
+    .path { color: var(--river); }
+    code {
+      background: var(--mist);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: var(--evergreen);
+    }
+
+    /* Footer */
+    .footer {
+      text-align: center;
+      padding: 40px 20px;
+      border-top: 1px solid var(--border-subtle);
+      margin-top: 40px;
+    }
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .footer-links a {
+      color: var(--evergreen);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 14px;
+    }
+    .footer-links a:hover { text-decoration: underline; }
+    .footer-credit {
+      font-size: 14px;
+      color: var(--deep-fir);
+      opacity: 0.6;
+    }
+    .footer-credit a {
+      color: var(--evergreen);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .footer-credit a:hover { text-decoration: underline; }
+
+    @media (max-width: 600px) {
+      h1 { font-size: 32px; }
+      .input-row { flex-direction: column; }
+      .btn { width: 100%; }
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>agentsh on Cloudflare</h1>
-    <p class="subtitle">Secure AI agent code execution with policy enforcement</p>
+    <header class="header">
+      <a href="https://www.agentsh.org?${utmAgentsh}" class="logo-link">
+        <div class="logo-mark">ag</div>
+        <span class="logo-text">agentsh</span>
+      </a>
+      <h1>Live Demo on Cloudflare</h1>
+      <p class="subtitle">See syscall-level enforcement in action. Try to access cloud metadata, private networks, or run blocked commands.</p>
+      <p class="powered-by">Running on Cloudflare Workers + Sandbox</p>
+    </header>
 
     <div class="feature-grid">
       <div class="feature">
-        <h3>Command Blocking</h3>
-        <p>Blocks dangerous commands like <code>sudo</code>, <code>ssh</code>, <code>nc</code>, <code>kill</code></p>
+        <h3>Network Blocking</h3>
+        <p>Blocks cloud metadata (169.254.169.254), private networks, and malicious domains</p>
       </div>
       <div class="feature">
-        <h3>Network Control</h3>
-        <p>Blocks cloud metadata services, private networks, and malicious domains</p>
+        <h3>eBPF + Seccomp</h3>
+        <p>Kernel-level enforcement that can't be bypassed by prompt injection</p>
       </div>
       <div class="feature">
-        <h3>DLP Protection</h3>
-        <p>Redacts API keys, tokens, and sensitive data before LLM exposure</p>
+        <h3>Policy Engine</h3>
+        <p>Configurable rules for commands, network, and file access</p>
       </div>
       <div class="feature">
-        <h3>File Protection</h3>
-        <p>Soft-deletes for recovery, blocks access to system files</p>
+        <h3>100% Protection</h3>
+        <p>Full security mode with syscall interception enabled</p>
       </div>
     </div>
 
-    <h2>API Endpoints</h2>
+    <h2>Try It Live</h2>
+    <div class="card">
+      <div class="input-row">
+        <input type="text" id="command" placeholder="curl http://169.254.169.254/latest/meta-data/">
+        <button class="btn" id="executeBtn" onclick="executeCommand()" ${turnstileEnabled ? 'disabled' : ''}>Execute</button>
+      </div>
 
+      ${turnstileEnabled ? `
+      <div class="turnstile-container">
+        <div class="cf-turnstile" data-sitekey="${turnstileSiteKey}" data-callback="onTurnstileSuccess" data-theme="light"></div>
+      </div>
+      ` : '<p class="warning">Turnstile not configured - running in development mode</p>'}
+
+      <div class="button-row">
+        <button class="btn btn-secondary" onclick="runDemo('network')">Demo: Network Blocking</button>
+        <button class="btn btn-secondary" onclick="runDemo('allowed')">Demo: Allowed Commands</button>
+        <button class="btn btn-secondary" onclick="runDemo('blocked')">Demo: Policy File</button>
+      </div>
+
+      <p class="rate-limit-info">Rate limit: <span id="remaining">${RATE_LIMIT_MAX}</span> requests remaining (resets every ${RATE_LIMIT_WINDOW}s)</p>
+
+      <div class="output-label">Output</div>
+      <div id="output">Ready to execute commands...
+
+Try these examples:
+  $ curl http://169.254.169.254/    # Cloud metadata - BLOCKED
+  $ curl http://10.0.0.1/           # Private network - BLOCKED
+  $ curl https://httpbin.org/get    # External site - ALLOWED
+  $ whoami                          # Basic command - ALLOWED</div>
+    </div>
+
+    <h2>API Reference</h2>
     <div class="card">
       <div class="endpoint">
         <span class="method">POST</span> <span class="path">/execute</span>
       </div>
-      <p>Execute a command in the sandbox. Body: <code>{"command": "your command"}</code></p>
-
-      <div class="endpoint">
-        <span class="method">GET</span> <span class="path">/demo/blocked</span>
-      </div>
-      <p>Demo: Try blocked commands (sudo, ssh, nc)</p>
-
-      <div class="endpoint">
-        <span class="method">GET</span> <span class="path">/demo/allowed</span>
-      </div>
-      <p>Demo: Try allowed commands (ls, python, echo)</p>
-
-      <div class="endpoint">
-        <span class="method">GET</span> <span class="path">/demo/dlp</span>
-      </div>
-      <p>Demo: Show DLP redaction of API keys</p>
+      <p>Execute a command in the sandbox. Requires Turnstile verification.</p>
+      <p style="margin-top: 8px;"><code>{"command": "...", "turnstileToken": "..."}</code></p>
 
       <div class="endpoint">
         <span class="method">GET</span> <span class="path">/demo/network</span>
       </div>
-      <p>Demo: Show network blocking (metadata, private networks)</p>
+      <p>Demo network blocking (metadata services, private IPs, external access)</p>
 
       <div class="endpoint">
-        <span class="method">GET</span> <span class="path">/terminal</span>
+        <span class="method">GET</span> <span class="path">/demo/allowed</span>
       </div>
-      <p>Get URL to interactive web terminal</p>
-    </div>
-
-    <h2>Try It</h2>
-    <div class="card">
-      <input type="text" id="command" placeholder="Enter command (e.g., ls -la)"
-             style="width: 100%; padding: 10px; background: #252525; border: 1px solid #333; color: #fff; border-radius: 4px; margin-bottom: 10px;">
-      <div>
-        <button class="btn" onclick="executeCommand()">Execute</button>
-        <button class="btn btn-secondary" onclick="runDemo('blocked')">Demo: Blocked</button>
-        <button class="btn btn-secondary" onclick="runDemo('allowed')">Demo: Allowed</button>
-        <button class="btn btn-secondary" onclick="runDemo('dlp')">Demo: DLP</button>
-        <button class="btn btn-secondary" onclick="runDemo('network')">Demo: Network</button>
-        <button class="btn btn-secondary" onclick="openTerminal()">Open Terminal</button>
-      </div>
-      <h3>Output:</h3>
-      <div id="output">Ready...</div>
+      <p>Demo allowed commands and agentsh security capabilities</p>
     </div>
   </div>
 
+  <footer class="footer">
+    <div class="footer-links">
+      <a href="https://www.agentsh.org?${utmAgentsh}">agentsh.org</a>
+      <a href="https://www.agentsh.org/docs?${utmAgentsh}">Documentation</a>
+      <a href="https://github.com/canyonroad/agentsh?${utmAgentsh}">GitHub</a>
+    </div>
+    <p class="footer-credit">by <a href="https://www.canyonroad.ai?${utmCanyonRoad}">Canyon Road</a></p>
+  </footer>
+
   <script>
+    let turnstileToken = ${turnstileEnabled ? 'null' : '"dev-mode"'};
+
+    function onTurnstileSuccess(token) {
+      turnstileToken = token;
+      document.getElementById('executeBtn').disabled = false;
+    }
+
     async function executeCommand() {
       const command = document.getElementById('command').value;
       const output = document.getElementById('output');
+
+      if (!command) {
+        output.textContent = 'Please enter a command';
+        return;
+      }
+
+      if (!turnstileToken) {
+        output.textContent = 'Please complete the verification challenge first';
+        return;
+      }
+
       output.textContent = 'Executing...';
 
       try {
         const res = await fetch('/execute', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command })
+          body: JSON.stringify({ command, turnstileToken })
         });
+
+        const remaining = res.headers.get('X-RateLimit-Remaining');
+        if (remaining) {
+          document.getElementById('remaining').textContent = remaining;
+        }
+
+        if (res.status === 429) {
+          output.innerHTML = '<span class="blocked">Rate limit exceeded. Please wait and try again.</span>';
+          return;
+        }
+
+        if (res.status === 403) {
+          output.innerHTML = '<span class="blocked">Verification failed. Please refresh and try again.</span>';
+          if (typeof turnstile !== 'undefined') {
+            turnstile.reset();
+            turnstileToken = null;
+            document.getElementById('executeBtn').disabled = true;
+          }
+          return;
+        }
+
         const data = await res.json();
         output.innerHTML = formatResult(command, data);
       } catch (e) {
@@ -224,34 +546,37 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
 
       try {
         const res = await fetch('/demo/' + type);
+
+        const remaining = res.headers.get('X-RateLimit-Remaining');
+        if (remaining) {
+          document.getElementById('remaining').textContent = remaining;
+        }
+
+        if (res.status === 429) {
+          output.innerHTML = '<span class="blocked">Rate limit exceeded. Please wait and try again.</span>';
+          return;
+        }
+
         const data = await res.json();
-        output.innerHTML = data.results.map(r => formatResult(r.command, r.result)).join('\\n---\\n');
+        output.innerHTML = data.results.map(r => formatResult(r.command, r.result)).join('\\n\\n');
       } catch (e) {
         output.textContent = 'Error: ' + e.message;
       }
     }
 
-    async function openTerminal() {
-      try {
-        const res = await fetch('/terminal');
-        const data = await res.json();
-        if (data.url) {
-          window.open(data.url, '_blank');
-        } else {
-          document.getElementById('output').textContent = 'Terminal: ' + JSON.stringify(data, null, 2);
-        }
-      } catch (e) {
-        document.getElementById('output').textContent = 'Error: ' + e.message;
-      }
-    }
-
     function formatResult(command, result) {
       let status = result.blocked ? '<span class="blocked">BLOCKED</span>' : '<span class="allowed">OK</span>';
-      let output = '$ ' + command + ' [' + status + ']\\n';
-      if (result.stdout) output += result.stdout;
-      if (result.stderr) output += '<span class="blocked">' + result.stderr + '</span>';
-      if (result.message) output += '<span class="blocked">' + result.message + '</span>';
+      let output = '$ ' + escapeHtml(command) + '  [' + status + ']\\n';
+      if (result.stdout) output += escapeHtml(result.stdout) + '\\n';
+      if (result.stderr) output += '<span class="blocked">' + escapeHtml(result.stderr) + '</span>\\n';
+      if (result.message) output += '<span class="blocked">' + escapeHtml(result.message) + '</span>\\n';
       return output;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
     }
 
     document.getElementById('command').addEventListener('keypress', (e) => {
@@ -260,14 +585,16 @@ const HTML_TEMPLATE = `<!DOCTYPE html>
   </script>
 </body>
 </html>`;
+}
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const clientIP = getClientIP(request);
 
     // CORS headers
-    const headers = {
+    const headers: Record<string, string> = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
@@ -277,19 +604,33 @@ export default {
       return new Response(null, { headers });
     }
 
+    // Check rate limit for all non-health endpoints
+    if (path !== '/health') {
+      const rateLimit = await checkRateLimit(env, clientIP);
+      headers['X-RateLimit-Remaining'] = String(rateLimit.remaining);
+      headers['X-RateLimit-Limit'] = String(RATE_LIMIT_MAX);
+
+      if (!rateLimit.allowed) {
+        return Response.json(
+          { error: 'Rate limit exceeded', retryAfter: RATE_LIMIT_WINDOW },
+          { status: 429, headers }
+        );
+      }
+    }
+
     try {
       // Get sandbox instance (shared across requests for demo)
       const sandbox = getSandbox(env.SANDBOX, 'demo-sandbox');
 
       // Route handling
       if (path === '/' || path === '') {
-        return new Response(HTML_TEMPLATE, {
+        return new Response(getHtmlTemplate(env.TURNSTILE_SITE_KEY || ''), {
           headers: { ...headers, 'Content-Type': 'text/html' },
         });
       }
 
       if (path === '/execute' && request.method === 'POST') {
-        return await handleExecute(request, sandbox, headers);
+        return await handleExecute(request, env, sandbox, clientIP, headers);
       }
 
       if (path === '/demo/blocked') {
@@ -330,13 +671,27 @@ export default {
 
 async function handleExecute(
   request: Request,
+  env: Env,
   sandbox: SandboxStub,
+  clientIP: string,
   headers: Record<string, string>
 ): Promise<Response> {
   const body = await request.json() as ExecuteRequest;
 
   if (!body.command) {
     return Response.json({ error: 'Missing command' }, { status: 400, headers });
+  }
+
+  // Verify Turnstile token (skip if not configured)
+  if (env.TURNSTILE_SECRET_KEY) {
+    if (!body.turnstileToken) {
+      return Response.json({ error: 'Missing Turnstile token' }, { status: 403, headers });
+    }
+
+    const isValid = await verifyTurnstile(body.turnstileToken, clientIP, env.TURNSTILE_SECRET_KEY);
+    if (!isValid) {
+      return Response.json({ error: 'Invalid Turnstile token' }, { status: 403, headers });
+    }
   }
 
   const result = await executeInSandbox(sandbox, body.command, body.timeout);
@@ -388,16 +743,12 @@ async function handleDemoAllowed(
   const configCheck = await executeRaw(sandbox, 'ls -la /etc/agentsh/');
   const detectResult = await executeRaw(sandbox, 'agentsh detect 2>&1 | head -20');
 
-  // Check config file for FUSE setting BEFORE running agentsh exec
-  const fuseConfig = await executeRaw(sandbox, 'cat /etc/agentsh/config.yaml | grep -A2 fuse');
-
-  // Check if there's a timeout issue with agentsh exec
-  const agentshExecDebug = await executeRaw(sandbox, 'timeout 5 agentsh exec --root=/workspace demo -- echo hello 2>&1 || echo "TIMEOUT or ERROR: $?"');
-
   // These are safe commands that are allowed by policy
   const allowedCommands = [
     'whoami',
     'pwd',
+    'ls -la /workspace',
+    'echo "Hello from agentsh sandbox!"',
   ];
 
   const results: DemoResult[] = [
@@ -405,8 +756,6 @@ async function handleDemoAllowed(
     { command: 'which agentsh', result: agentshLocation },
     { command: 'ls -la /etc/agentsh/', result: configCheck },
     { command: 'agentsh detect (security capabilities)', result: detectResult },
-    { command: 'fuse config check', result: fuseConfig },
-    { command: 'agentsh exec test (with timeout)', result: agentshExecDebug },
   ];
 
   for (const cmd of allowedCommands) {
@@ -441,8 +790,8 @@ async function handleDemoDLP(
   }
 
   return Response.json({
-    description: 'DLP redacts sensitive data (API keys, emails, cards) from output',
-    note: 'In a real scenario, this prevents accidental exposure of secrets to LLMs',
+    description: 'DLP redaction (note: only works on API proxy traffic, not command stdout)',
+    note: 'For full DLP, route API calls through agentsh proxy',
     results
   }, { headers });
 }
@@ -452,20 +801,20 @@ async function handleDemoNetwork(
   headers: Record<string, string>
 ): Promise<Response> {
   const networkCommands = [
-    'curl -s --connect-timeout 2 http://169.254.169.254/latest/meta-data/ 2>&1 || true',
-    'curl -s --connect-timeout 2 http://10.0.0.1/ 2>&1 || true',
-    'curl -s --connect-timeout 2 https://httpbin.org/get 2>&1 | head -5 || true',
+    { cmd: 'curl -s --connect-timeout 2 http://169.254.169.254/latest/meta-data/ 2>&1 || true', desc: 'Cloud metadata (BLOCKED)' },
+    { cmd: 'curl -s --connect-timeout 2 http://10.0.0.1/ 2>&1 || true', desc: 'Private network (BLOCKED)' },
+    { cmd: 'curl -s --connect-timeout 5 https://httpbin.org/get 2>&1 | head -5 || true', desc: 'External site (ALLOWED)' },
   ];
 
   const results: DemoResult[] = [];
 
-  for (const cmd of networkCommands) {
+  for (const { cmd, desc } of networkCommands) {
     const result = await executeInSandbox(sandbox, cmd);
-    results.push({ command: cmd, result });
+    results.push({ command: desc, result });
   }
 
   return Response.json({
-    description: 'Network policy blocks cloud metadata and private networks',
+    description: 'Network policy blocks cloud metadata and private networks, allows external access',
     results
   }, { headers });
 }
@@ -474,8 +823,6 @@ async function handleTerminal(
   sandbox: SandboxStub,
   headers: Record<string, string>
 ): Promise<Response> {
-  // Note: Preview URLs require custom domain setup with wildcard DNS
-  // For now, return instructions on how to access the terminal
   return Response.json({
     message: 'Terminal access requires preview URL setup',
     note: 'Preview URLs need a custom domain with wildcard DNS configured.',
@@ -491,18 +838,12 @@ async function executeInSandbox(
   useAgentsh: boolean = true
 ): Promise<ExecuteResponse> {
   try {
-    // Generate a unique session ID for each request to avoid stale session issues
     const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-    // Wrap command with agentsh exec for policy enforcement
-    // Use a consistent session 'demo' for the demo environment
-    // agentsh exec auto-starts the server if needed
     const actualCommand = useAgentsh
       ? `agentsh exec --root=/workspace demo -- /bin/bash -c ${JSON.stringify(command)}`
       : command;
 
-    // Use fetch-based API to call the sandbox's internal execute endpoint
-    // The containerFetch will automatically start the container if needed
     const response = await sandbox.fetch(new Request('http://sandbox/api/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -532,7 +873,6 @@ async function executeInSandbox(
       exitCode: number;
     };
 
-    // Check if the command was blocked by agentsh policy
     const stdout = result.stdout || '';
     const stderr = result.stderr || '';
     const combinedOutput = stdout + stderr;
@@ -541,7 +881,6 @@ async function executeInSandbox(
                    combinedOutput.includes('blocked by policy') ||
                    combinedOutput.includes('BLOCKED:');
 
-    // Clean up agentsh server startup messages from output
     const cleanedStdout = stdout
       .replace(/agentsh: auto-starting server[^\n]*\n?/g, '')
       .replace(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} INFO[^\n]*\n?/g, '')
@@ -567,8 +906,7 @@ async function executeInSandbox(
   }
 }
 
-// Execute without agentsh (for system commands)
-async function executeRaw(
+function executeRaw(
   sandbox: DurableObjectStub<Sandbox>,
   command: string,
   timeout: number = 30000
@@ -577,12 +915,10 @@ async function executeRaw(
 }
 
 function extractBlockMessage(output: string): string {
-  // Match "command denied by policy (rule=rule-name)"
   const policyMatch = output.match(/command denied by policy[^)]*\(rule=([^)]+)\)/);
   if (policyMatch) {
     return `Blocked by policy: ${policyMatch[1]}`;
   }
-  // Match "blocked by policy (rule=rule-name)"
   const blockedMatch = output.match(/blocked by policy[^)]*\(rule=([^)]+)\)/);
   if (blockedMatch) {
     return `Blocked by policy: ${blockedMatch[1]}`;

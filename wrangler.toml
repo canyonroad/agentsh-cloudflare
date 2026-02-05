@@ -19,6 +19,18 @@ class_name = "Sandbox"
 tag = "v1"
 new_sqlite_classes = ["Sandbox"]
 
+# KV namespace for rate limiting
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "755d7419e3294b0c9111e64ca64ee691"
+
 # Environment variables
 [vars]
 ENVIRONMENT = "development"
+
+# Turnstile site key (public)
+# Get from: https://dash.cloudflare.com/?to=/:account/turnstile
+TURNSTILE_SITE_KEY = "0x4AAAAAACYH85cf64pXECNz"
+
+# Secrets (set via: wrangler secret put TURNSTILE_SECRET_KEY)
+# TURNSTILE_SECRET_KEY = "your-secret-key"
