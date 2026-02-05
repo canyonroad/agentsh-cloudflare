@@ -110,8 +110,8 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>agentsh Live Demo - Secure AI Agent Execution on Cloudflare</title>
   <meta name="description" content="Try agentsh live on Cloudflare. See syscall-level enforcement block dangerous commands and network access in real-time.">
-  <link rel="icon" href="https://www.agentsh.org/favicon.ico" type="image/x-icon">
-  <link rel="apple-touch-icon" href="https://www.agentsh.org/apple-touch-icon.png">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='4' fill='%232D6A4F'/><polyline points='5 16 10 11 5 6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/><line x1='12' y1='18' x2='19' y2='18' stroke='white' stroke-width='2' stroke-linecap='round'/></svg>" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><rect width='24' height='24' rx='4' fill='%232D6A4F'/><polyline points='5 16 10 11 5 6' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/><line x1='12' y1='18' x2='19' y2='18' stroke='white' stroke-width='2' stroke-linecap='round'/></svg>">
   <meta property="og:image" content="https://www.agentsh.org/og-image.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -157,12 +157,14 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
       width: 48px;
       height: 48px;
       border-radius: 12px;
-      overflow: hidden;
+      background: var(--evergreen);
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    .logo-mark img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
+    .logo-mark svg {
+      width: 28px;
+      height: 28px;
     }
     .logo-text {
       font-family: 'DM Serif Display', serif;
@@ -396,7 +398,12 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
   <div class="container">
     <header class="header">
       <a href="https://www.agentsh.org?${utmAgentsh}" class="logo-link">
-        <div class="logo-mark"><img src="https://www.agentsh.org/logo.svg" alt="agentsh logo" onerror="this.parentElement.innerHTML='ag'; this.parentElement.style.background='var(--evergreen)'; this.parentElement.style.color='white'; this.parentElement.style.display='flex'; this.parentElement.style.alignItems='center'; this.parentElement.style.justifyContent='center'; this.parentElement.style.fontFamily='JetBrains Mono'; this.parentElement.style.fontWeight='600';"></div>
+        <div class="logo-mark">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="4 17 10 11 4 5"></polyline>
+            <line x1="12" y1="19" x2="20" y2="19"></line>
+          </svg>
+        </div>
         <span class="logo-text">agentsh</span>
       </a>
       <h1>Live Demo on Cloudflare</h1>
