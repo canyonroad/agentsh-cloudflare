@@ -41,7 +41,7 @@ sandbox:
     max_processes: 100
 
   fuse:
-    enabled: false  # Disabled - causes container crash in Firecracker
+    enabled: true  # v0.9.1: improved detection skips mount when CAP_SYS_ADMIN is missing
 
   network:
     enabled: true
