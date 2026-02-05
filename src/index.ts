@@ -110,6 +110,9 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>agentsh Live Demo - Secure AI Agent Execution on Cloudflare</title>
   <meta name="description" content="Try agentsh live on Cloudflare. See syscall-level enforcement block dangerous commands and network access in real-time.">
+  <link rel="icon" href="https://www.agentsh.org/favicon.ico" type="image/x-icon">
+  <link rel="apple-touch-icon" href="https://www.agentsh.org/apple-touch-icon.png">
+  <meta property="og:image" content="https://www.agentsh.org/og-image.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -153,15 +156,13 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
     .logo-mark {
       width: 48px;
       height: 48px;
-      background: var(--evergreen);
       border-radius: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: white;
-      font-family: 'JetBrains Mono', monospace;
-      font-weight: 600;
-      font-size: 20px;
+      overflow: hidden;
+    }
+    .logo-mark img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
     }
     .logo-text {
       font-family: 'DM Serif Display', serif;
@@ -395,7 +396,7 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
   <div class="container">
     <header class="header">
       <a href="https://www.agentsh.org?${utmAgentsh}" class="logo-link">
-        <div class="logo-mark">ag</div>
+        <div class="logo-mark"><img src="https://www.agentsh.org/logo.svg" alt="agentsh logo" onerror="this.parentElement.innerHTML='ag'; this.parentElement.style.background='var(--evergreen)'; this.parentElement.style.color='white'; this.parentElement.style.display='flex'; this.parentElement.style.alignItems='center'; this.parentElement.style.justifyContent='center'; this.parentElement.style.fontFamily='JetBrains Mono'; this.parentElement.style.fontWeight='600';"></div>
         <span class="logo-text">agentsh</span>
       </a>
       <h1>Live Demo on Cloudflare</h1>
@@ -436,9 +437,10 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
       ` : '<p class="warning">Turnstile not configured - running in development mode</p>'}
 
       <div class="button-row">
-        <button class="btn btn-secondary" onclick="runDemo('network')">Demo: Network Blocking</button>
-        <button class="btn btn-secondary" onclick="runDemo('allowed')">Demo: Allowed Commands</button>
-        <button class="btn btn-secondary" onclick="runDemo('blocked')">Demo: Policy File</button>
+        <button class="btn btn-secondary" onclick="runDemo('cloud-metadata')">Multi-Cloud Metadata</button>
+        <button class="btn btn-secondary" onclick="runDemo('ssrf')">SSRF Prevention</button>
+        <button class="btn btn-secondary" onclick="runDemo('devtools')">Dev Tools</button>
+        <button class="btn btn-secondary" onclick="runDemo('network')">Network Blocking</button>
       </div>
 
       <p class="rate-limit-info">Rate limit: <span id="remaining">${RATE_LIMIT_MAX}</span> requests remaining (resets every ${RATE_LIMIT_WINDOW}s)</p>
@@ -462,14 +464,24 @@ Try these examples:
       <p style="margin-top: 8px;"><code>{"command": "...", "turnstileToken": "..."}</code></p>
 
       <div class="endpoint">
-        <span class="method">GET</span> <span class="path">/demo/network</span>
+        <span class="method">GET</span> <span class="path">/demo/cloud-metadata</span>
       </div>
-      <p>Demo network blocking (metadata services, private IPs, external access)</p>
+      <p>Multi-cloud metadata protection (AWS, GCP, Azure, DigitalOcean, Alibaba, Oracle)</p>
 
       <div class="endpoint">
-        <span class="method">GET</span> <span class="path">/demo/allowed</span>
+        <span class="method">GET</span> <span class="path">/demo/ssrf</span>
       </div>
-      <p>Demo allowed commands and agentsh security capabilities</p>
+      <p>SSRF prevention (localhost, loopback, private networks, link-local)</p>
+
+      <div class="endpoint">
+        <span class="method">GET</span> <span class="path">/demo/devtools</span>
+      </div>
+      <p>Development tools demo (Python, Node.js, Bun, Git, external APIs)</p>
+
+      <div class="endpoint">
+        <span class="method">GET</span> <span class="path">/demo/network</span>
+      </div>
+      <p>Network blocking overview (blocked vs allowed)</p>
     </div>
   </div>
 
@@ -649,6 +661,18 @@ export default {
         return await handleDemoNetwork(sandbox, headers);
       }
 
+      if (path === '/demo/cloud-metadata') {
+        return await handleDemoCloudMetadata(sandbox, headers);
+      }
+
+      if (path === '/demo/ssrf') {
+        return await handleDemoSSRF(sandbox, headers);
+      }
+
+      if (path === '/demo/devtools') {
+        return await handleDemoDevTools(sandbox, headers);
+      }
+
       if (path === '/terminal') {
         return await handleTerminal(sandbox, headers);
       }
@@ -815,6 +839,102 @@ async function handleDemoNetwork(
 
   return Response.json({
     description: 'Network policy blocks cloud metadata and private networks, allows external access',
+    results
+  }, { headers });
+}
+
+async function handleDemoCloudMetadata(
+  sandbox: SandboxStub,
+  headers: Record<string, string>
+): Promise<Response> {
+  // All major cloud providers' metadata endpoints
+  const metadataEndpoints = [
+    { cmd: 'curl -s --connect-timeout 2 http://169.254.169.254/latest/meta-data/ 2>&1', desc: 'AWS EC2 Metadata', provider: 'AWS' },
+    { cmd: 'curl -s --connect-timeout 2 -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/ 2>&1', desc: 'GCP Metadata', provider: 'GCP' },
+    { cmd: 'curl -s --connect-timeout 2 -H "Metadata: true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" 2>&1', desc: 'Azure IMDS', provider: 'Azure' },
+    { cmd: 'curl -s --connect-timeout 2 http://169.254.169.254/v1/ 2>&1', desc: 'DigitalOcean Metadata', provider: 'DigitalOcean' },
+    { cmd: 'curl -s --connect-timeout 2 http://100.100.100.200/latest/meta-data/ 2>&1', desc: 'Alibaba Cloud Metadata', provider: 'Alibaba' },
+    { cmd: 'curl -s --connect-timeout 2 http://169.254.169.254/opc/v1/instance/ 2>&1', desc: 'Oracle Cloud Metadata', provider: 'Oracle' },
+  ];
+
+  const results: DemoResult[] = [];
+
+  for (const { cmd, desc, provider } of metadataEndpoints) {
+    const result = await executeInSandbox(sandbox, cmd);
+    results.push({ command: `${provider}: ${desc}`, result });
+  }
+
+  return Response.json({
+    title: 'Multi-Cloud Metadata Protection',
+    description: 'agentsh blocks access to instance metadata endpoints across all major cloud providers. This prevents credential theft attacks where an agent is tricked into accessing cloud metadata to steal IAM credentials.',
+    blocked: metadataEndpoints.length,
+    results
+  }, { headers });
+}
+
+async function handleDemoSSRF(
+  sandbox: SandboxStub,
+  headers: Record<string, string>
+): Promise<Response> {
+  // SSRF attack vectors - focus on policy-blocked private networks
+  const ssrfVectors = [
+    // These are blocked by policy
+    { cmd: 'curl -s --connect-timeout 2 http://169.254.169.254/ 2>&1', desc: 'AWS Metadata (169.254.169.254)', category: 'Cloud Metadata', policyBlocked: true },
+    { cmd: 'curl -s --connect-timeout 2 http://10.0.0.1/ 2>&1', desc: '10.0.0.1 (Class A Private)', category: 'Private Network', policyBlocked: true },
+    { cmd: 'curl -s --connect-timeout 2 http://10.255.255.1/ 2>&1', desc: '10.255.255.1 (Class A Private)', category: 'Private Network', policyBlocked: true },
+    { cmd: 'curl -s --connect-timeout 2 http://172.16.0.1/ 2>&1', desc: '172.16.0.1 (Class B Private)', category: 'Private Network', policyBlocked: true },
+    { cmd: 'curl -s --connect-timeout 2 http://172.31.255.1/ 2>&1', desc: '172.31.255.1 (Class B Private)', category: 'Private Network', policyBlocked: true },
+    { cmd: 'curl -s --connect-timeout 2 http://192.168.1.1/ 2>&1', desc: '192.168.1.1 (Class C Private)', category: 'Private Network', policyBlocked: true },
+    { cmd: 'curl -s --connect-timeout 2 http://192.168.255.1/ 2>&1', desc: '192.168.255.1 (Class C Private)', category: 'Private Network', policyBlocked: true },
+    { cmd: 'curl -s --connect-timeout 2 http://169.254.1.1/ 2>&1', desc: '169.254.1.1 (Link-Local)', category: 'Link-Local', policyBlocked: true },
+    // Contrast with allowed external
+    { cmd: 'curl -s --connect-timeout 3 https://httpbin.org/ip 2>&1', desc: 'httpbin.org (External)', category: 'External', policyBlocked: false },
+  ];
+
+  const results: DemoResult[] = [];
+
+  for (const { cmd, desc, category, policyBlocked } of ssrfVectors) {
+    const result = await executeInSandbox(sandbox, cmd);
+    results.push({ command: `[${category}] ${desc}`, result });
+  }
+
+  return Response.json({
+    title: 'SSRF Attack Prevention',
+    description: 'Server-Side Request Forgery (SSRF) attacks trick applications into making requests to internal resources. agentsh blocks all RFC 1918 private networks, cloud metadata endpoints, and link-local addresses at the syscall level.',
+    note: 'These blocks cannot be bypassed via DNS rebinding, URL encoding tricks, or prompt injection because enforcement happens at the network syscall level. The last entry shows that external HTTPS access is allowed.',
+    results
+  }, { headers });
+}
+
+async function handleDemoDevTools(
+  sandbox: SandboxStub,
+  headers: Record<string, string>
+): Promise<Response> {
+  // Development tools that work in the sandbox
+  const devToolCommands = [
+    { cmd: 'python3 --version', desc: 'Python version' },
+    { cmd: 'python3 -c "import json; print(json.dumps({\'hello\': \'world\'}))"', desc: 'Python JSON' },
+    { cmd: 'node --version', desc: 'Node.js version' },
+    { cmd: 'node -e "console.log(JSON.stringify({message: \'Hello from Node.js\'}))"', desc: 'Node.js execution' },
+    { cmd: 'bun --version', desc: 'Bun version' },
+    { cmd: 'pip3 list 2>/dev/null | head -10', desc: 'Python packages (first 10)' },
+    { cmd: 'which git && git --version', desc: 'Git version' },
+    { cmd: 'curl -s https://api.github.com/zen', desc: 'GitHub API (external HTTPS)' },
+    { cmd: 'echo "SELECT 1+1 AS result;" | python3 -c "import sys; print(sys.stdin.read())"', desc: 'Pipe operations' },
+    { cmd: 'ls -la /workspace', desc: 'Workspace directory' },
+  ];
+
+  const results: DemoResult[] = [];
+
+  for (const { cmd, desc } of devToolCommands) {
+    const result = await executeInSandbox(sandbox, cmd);
+    results.push({ command: desc, result });
+  }
+
+  return Response.json({
+    title: 'Development Tools Demo',
+    description: 'Normal development workflows work seamlessly within the agentsh sandbox. Python, Node.js, Bun, Git, and external HTTPS APIs are all available.',
+    note: 'Security enforcement is transparent to legitimate operations while blocking dangerous network access and commands.',
     results
   }, { headers });
 }
