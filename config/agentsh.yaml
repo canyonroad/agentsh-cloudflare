@@ -41,7 +41,7 @@ sandbox:
     max_processes: 100
 
   fuse:
-    enabled: false  # Firecracker has CAP_SYS_ADMIN but seccomp blocks mount(); detection insufficient
+    enabled: true  # v0.9.2 probes mount() syscall to detect seccomp blocking
 
   network:
     enabled: true
