@@ -7,7 +7,7 @@
  * - Rate limiting and Turnstile protection
  */
 
-import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
+import { getSandbox, type Sandbox, type ExecResult } from "@cloudflare/sandbox";
 
 // Re-export Sandbox class for Durable Objects
 export { Sandbox } from "@cloudflare/sandbox";
@@ -20,8 +20,8 @@ type Env = {
   TURNSTILE_SECRET_KEY: string;
 };
 
-// Type for the stub returned by getSandbox
-type SandboxStub = DurableObjectStub<Sandbox>;
+// Type for the sandbox instance returned by getSandbox
+type SandboxInstance = ReturnType<typeof getSandbox>;
 
 interface ExecuteRequest {
   command: string;
@@ -704,7 +704,7 @@ export default {
 async function handleExecute(
   request: Request,
   env: Env,
-  sandbox: SandboxStub,
+  sandbox: SandboxInstance,
   clientIP: string,
   headers: Record<string, string>
 ): Promise<Response> {
@@ -732,7 +732,7 @@ async function handleExecute(
 }
 
 async function handleDemoBlocked(
-  sandbox: SandboxStub,
+  sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
   // Show the policy file first (using raw execution)
@@ -766,7 +766,7 @@ async function handleDemoBlocked(
 }
 
 async function handleDemoAllowed(
-  sandbox: SandboxStub,
+  sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
   // Show agentsh installation (using raw execution for system checks)
@@ -803,7 +803,7 @@ async function handleDemoAllowed(
 }
 
 async function handleDemoDLP(
-  sandbox: SandboxStub,
+  sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
   // These contain fake secrets that should be redacted by DLP
@@ -829,7 +829,7 @@ async function handleDemoDLP(
 }
 
 async function handleDemoNetwork(
-  sandbox: SandboxStub,
+  sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
   const networkCommands = [
@@ -852,7 +852,7 @@ async function handleDemoNetwork(
 }
 
 async function handleDemoCloudMetadata(
-  sandbox: SandboxStub,
+  sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
   // All major cloud providers' metadata endpoints
@@ -881,7 +881,7 @@ async function handleDemoCloudMetadata(
 }
 
 async function handleDemoSSRF(
-  sandbox: SandboxStub,
+  sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
   // SSRF attack vectors - focus on policy-blocked private networks
@@ -915,7 +915,7 @@ async function handleDemoSSRF(
 }
 
 async function handleDemoDevTools(
-  sandbox: SandboxStub,
+  sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
   // Development tools that work in the sandbox
@@ -948,7 +948,7 @@ async function handleDemoDevTools(
 }
 
 async function handleTerminal(
-  sandbox: SandboxStub,
+  sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
   return Response.json({
@@ -960,46 +960,17 @@ async function handleTerminal(
 }
 
 async function executeInSandbox(
-  sandbox: DurableObjectStub<Sandbox>,
+  sandbox: SandboxInstance,
   command: string,
   timeout: number = 30000,
   useAgentsh: boolean = true
 ): Promise<ExecuteResponse> {
   try {
-    const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
     const actualCommand = useAgentsh
       ? `agentsh exec --root=/workspace demo -- /bin/bash -c ${JSON.stringify(command)}`
       : command;
 
-    const response = await sandbox.fetch(new Request('http://sandbox/api/execute', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        command: actualCommand,
-        timeout,
-        sessionId,
-      }),
-    }));
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      return {
-        success: false,
-        stdout: '',
-        stderr: `Sandbox API error: ${response.status} - ${errorText}`,
-        exitCode: -1,
-        blocked: false,
-        message: `Sandbox error: ${response.status}`,
-      };
-    }
-
-    const result = await response.json() as {
-      success: boolean;
-      stdout: string;
-      stderr: string;
-      exitCode: number;
-    };
+    const result = await sandbox.exec(actualCommand, { timeout });
 
     const stdout = result.stdout || '';
     const stderr = result.stderr || '';
@@ -1035,7 +1006,7 @@ async function executeInSandbox(
 }
 
 function executeRaw(
-  sandbox: DurableObjectStub<Sandbox>,
+  sandbox: SandboxInstance,
   command: string,
   timeout: number = 30000
 ): Promise<ExecuteResponse> {
