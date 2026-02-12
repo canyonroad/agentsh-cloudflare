@@ -20,11 +20,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install additional dependencies needed for agentsh
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        -o Dpkg::Options::="--force-confnew" \
         libseccomp2 \
+        fuse3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install agentsh release
-ARG AGENTSH_VERSION=0.9.2
+ARG AGENTSH_VERSION=0.9.4
 RUN set -eux; \
     deb="agentsh_${AGENTSH_VERSION}_linux_${DEB_ARCH}.deb"; \
     url="https://github.com/${AGENTSH_REPO}/releases/download/v${AGENTSH_VERSION}/${deb}"; \

@@ -41,7 +41,7 @@ sandbox:
     max_processes: 100
 
   fuse:
-    enabled: false  # v0.9.2 doesn't include mount() probe yet; seccomp blocks mount in Firecracker
+    enabled: true  # FUSE works in production via fusermount path (no /dev/fuse in local wrangler dev)
 
   network:
     enabled: true
