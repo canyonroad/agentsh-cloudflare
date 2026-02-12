@@ -446,6 +446,7 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
       <div class="button-row">
         <button class="btn btn-secondary" onclick="runDemo('cloud-metadata')">Multi-Cloud Metadata</button>
         <button class="btn btn-secondary" onclick="runDemo('ssrf')">SSRF Prevention</button>
+        <button class="btn btn-secondary" onclick="runDemo('filesystem')">File Protection</button>
         <button class="btn btn-secondary" onclick="runDemo('devtools')">Dev Tools</button>
         <button class="btn btn-secondary" onclick="runDemo('network')">Network Blocking</button>
       </div>
@@ -489,6 +490,11 @@ Try these examples:
         <span class="method">GET</span> <span class="path">/demo/network</span>
       </div>
       <p>Network blocking overview (blocked vs allowed)</p>
+
+      <div class="endpoint">
+        <span class="method">GET</span> <span class="path">/demo/filesystem</span>
+      </div>
+      <p>FUSE filesystem protection (write blocking, sensitive file access, path traversal)</p>
     </div>
   </div>
 
@@ -679,6 +685,10 @@ export default {
 
       if (path === '/demo/devtools') {
         return await handleDemoDevTools(sandbox, headers);
+      }
+
+      if (path === '/demo/filesystem') {
+        return await handleDemoFilesystem(sandbox, headers);
       }
 
       if (path === '/terminal') {
@@ -943,6 +953,60 @@ async function handleDemoDevTools(
     title: 'Development Tools Demo',
     description: 'Normal development workflows work seamlessly within the agentsh sandbox. Python, Node.js, Bun, Git, and external HTTPS APIs are all available.',
     note: 'Security enforcement is transparent to legitimate operations while blocking dangerous network access and commands.',
+    results
+  }, { headers });
+}
+
+async function handleDemoFilesystem(
+  sandbox: SandboxInstance,
+  headers: Record<string, string>
+): Promise<Response> {
+  const results: DemoResult[] = [];
+
+  // 1. Show that FUSE is active
+  const detectResult = await executeRaw(sandbox, 'agentsh detect 2>&1 | grep -E "fuse|Security Mode|Protection"');
+  results.push({ command: 'agentsh detect (FUSE status)', result: detectResult });
+
+  // 2. Workspace writes - ALLOWED
+  const workspaceWrite = await executeInSandbox(sandbox, 'echo "hello from agent" > /workspace/test.txt && cat /workspace/test.txt');
+  results.push({ command: 'Write to /workspace/test.txt (ALLOWED)', result: workspaceWrite });
+
+  // 3. Temp writes - ALLOWED
+  const tmpWrite = await executeInSandbox(sandbox, 'echo "temp data" > /tmp/test.txt && cat /tmp/test.txt');
+  results.push({ command: 'Write to /tmp/test.txt (ALLOWED)', result: tmpWrite });
+
+  // 4. Write to /etc/passwd - BLOCKED
+  const etcPasswd = await executeInSandbox(sandbox, 'echo "hacked" >> /etc/passwd 2>&1; echo "exit=$?"');
+  results.push({ command: 'Write to /etc/passwd (BLOCKED)', result: etcPasswd });
+
+  // 5. Read /etc/shadow - BLOCKED
+  const etcShadow = await executeInSandbox(sandbox, 'cat /etc/shadow 2>&1; echo "exit=$?"');
+  results.push({ command: 'Read /etc/shadow (BLOCKED)', result: etcShadow });
+
+  // 6. Write to system binary dir - BLOCKED
+  const usrBinWrite = await executeInSandbox(sandbox, 'touch /usr/bin/malware 2>&1; echo "exit=$?"');
+  results.push({ command: 'Create /usr/bin/malware (BLOCKED)', result: usrBinWrite });
+
+  // 7. Path traversal attempt from workspace - BLOCKED
+  const pathTraversal = await executeInSandbox(sandbox, 'cat /workspace/../../etc/shadow 2>&1; echo "exit=$?"');
+  results.push({ command: 'Path traversal ../../etc/shadow (BLOCKED)', result: pathTraversal });
+
+  // 8. Overwrite agentsh config - BLOCKED
+  const overwriteConfig = await executeInSandbox(sandbox, 'echo "hacked" > /etc/agentsh/config.yaml 2>&1; echo "exit=$?"');
+  results.push({ command: 'Overwrite agentsh config (BLOCKED)', result: overwriteConfig });
+
+  // 9. Delete workspace file (soft-delete) - file goes to trash
+  const softDelete = await executeInSandbox(sandbox, 'rm /workspace/test.txt 2>&1 && echo "deleted" && ls /workspace/test.txt 2>&1; echo "exit=$?"');
+  results.push({ command: 'Delete workspace file (soft-delete)', result: softDelete });
+
+  // 10. Privilege escalation via file - BLOCKED
+  const sudoersWrite = await executeInSandbox(sandbox, 'echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers 2>&1; echo "exit=$?"');
+  results.push({ command: 'Write to /etc/sudoers (BLOCKED)', result: sudoersWrite });
+
+  return Response.json({
+    title: 'FUSE Filesystem Protection',
+    description: 'agentsh uses FUSE to intercept all filesystem operations at the kernel level. Write access is restricted to /workspace and /tmp. System files, binaries, and sensitive configs are protected.',
+    note: 'FUSE filesystem interception provides fine-grained file access control that cannot be bypassed by the agent. Policy rules define which paths allow reads, writes, or are completely blocked.',
     results
   }, { headers });
 }
