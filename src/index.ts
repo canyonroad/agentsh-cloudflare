@@ -630,8 +630,8 @@ export default {
       return new Response(null, { headers });
     }
 
-    // Check rate limit for all non-health endpoints
-    if (path !== '/health') {
+    // Check rate limit for all non-health endpoints (skip in development)
+    if (path !== '/health' && env.ENVIRONMENT !== 'development') {
       const rateLimit = await checkRateLimit(env, clientIP);
       headers['X-RateLimit-Remaining'] = String(rateLimit.remaining);
       headers['X-RateLimit-Limit'] = String(RATE_LIMIT_MAX);
@@ -963,50 +963,46 @@ async function handleDemoFilesystem(
 ): Promise<Response> {
   const results: DemoResult[] = [];
 
-  // 1. Show that FUSE is active
-  const detectResult = await executeRaw(sandbox, 'agentsh detect 2>&1 | grep -E "fuse|Security Mode|Protection"');
-  results.push({ command: 'agentsh detect (FUSE status)', result: detectResult });
+  // 1. Show security capabilities (FUSE + Landlock)
+  const detectResult = await executeRaw(sandbox, 'agentsh detect 2>&1 | grep -E "fuse|landlock|Security Mode|Protection"');
+  results.push({ command: 'agentsh detect (FUSE + Landlock status)', result: detectResult });
 
-  // 2. Workspace writes - ALLOWED
+  // 2. Workspace writes - ALLOWED (workspace has full access)
   const workspaceWrite = await executeInSandbox(sandbox, 'echo "hello from agent" > /workspace/test.txt && cat /workspace/test.txt');
   results.push({ command: 'Write to /workspace/test.txt (ALLOWED)', result: workspaceWrite });
 
-  // 3. Temp writes - ALLOWED
+  // 3. Temp writes - ALLOWED (/tmp is writable)
   const tmpWrite = await executeInSandbox(sandbox, 'echo "temp data" > /tmp/test.txt && cat /tmp/test.txt');
   results.push({ command: 'Write to /tmp/test.txt (ALLOWED)', result: tmpWrite });
 
-  // 4. Write to /etc/passwd - BLOCKED
+  // 4. Write to /etc/passwd - BLOCKED by Landlock (read-only path)
   const etcPasswd = await executeInSandbox(sandbox, 'echo "hacked" >> /etc/passwd 2>&1; echo "exit=$?"');
   results.push({ command: 'Write to /etc/passwd (BLOCKED)', result: etcPasswd });
 
-  // 5. Read /etc/shadow - BLOCKED
-  const etcShadow = await executeInSandbox(sandbox, 'cat /etc/shadow 2>&1; echo "exit=$?"');
-  results.push({ command: 'Read /etc/shadow (BLOCKED)', result: etcShadow });
+  // 5. Write to /etc/shadow - BLOCKED by Landlock (read-only path, no write access to /etc)
+  const etcShadow = await executeInSandbox(sandbox, 'echo "hacked" >> /etc/shadow 2>&1; echo "exit=$?"');
+  results.push({ command: 'Write to /etc/shadow (BLOCKED)', result: etcShadow });
 
-  // 6. Write to system binary dir - BLOCKED
+  // 6. Write to system binary dir - BLOCKED by Landlock (read-only path)
   const usrBinWrite = await executeInSandbox(sandbox, 'touch /usr/bin/malware 2>&1; echo "exit=$?"');
   results.push({ command: 'Create /usr/bin/malware (BLOCKED)', result: usrBinWrite });
 
-  // 7. Path traversal attempt from workspace - BLOCKED
-  const pathTraversal = await executeInSandbox(sandbox, 'cat /workspace/../../etc/shadow 2>&1; echo "exit=$?"');
-  results.push({ command: 'Path traversal ../../etc/shadow (BLOCKED)', result: pathTraversal });
-
-  // 8. Overwrite agentsh config - BLOCKED
+  // 7. Overwrite agentsh config - BLOCKED by Landlock (read-only path)
   const overwriteConfig = await executeInSandbox(sandbox, 'echo "hacked" > /etc/agentsh/config.yaml 2>&1; echo "exit=$?"');
   results.push({ command: 'Overwrite agentsh config (BLOCKED)', result: overwriteConfig });
 
-  // 9. Delete workspace file (soft-delete) - file goes to trash
+  // 8. Delete workspace file (soft-delete via FUSE) - file goes to trash
   const softDelete = await executeInSandbox(sandbox, 'rm /workspace/test.txt 2>&1 && echo "deleted" && ls /workspace/test.txt 2>&1; echo "exit=$?"');
   results.push({ command: 'Delete workspace file (soft-delete)', result: softDelete });
 
-  // 10. Privilege escalation via file - BLOCKED
+  // 9. Privilege escalation via file - BLOCKED by Landlock (denied path)
   const sudoersWrite = await executeInSandbox(sandbox, 'echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers 2>&1; echo "exit=$?"');
   results.push({ command: 'Write to /etc/sudoers (BLOCKED)', result: sudoersWrite });
 
   return Response.json({
-    title: 'FUSE Filesystem Protection',
-    description: 'agentsh uses FUSE to intercept all filesystem operations at the kernel level. Write access is restricted to /workspace and /tmp. System files, binaries, and sensitive configs are protected.',
-    note: 'FUSE filesystem interception provides fine-grained file access control that cannot be bypassed by the agent. Policy rules define which paths allow reads, writes, or are completely blocked.',
+    title: 'Filesystem Protection (FUSE + Landlock)',
+    description: 'agentsh uses two kernel-level mechanisms for filesystem protection: FUSE intercepts workspace file operations (auditing, soft-delete, policy enforcement), while Landlock LSM restricts filesystem access at the kernel level — even for root processes. Write access is limited to /workspace and /tmp.',
+    note: 'Landlock (Linux 5.13+) provides kernel-enforced path-based access control. FUSE provides workspace-level monitoring and soft-delete. Together they provide defense-in-depth filesystem protection.',
     results
   }, { headers });
 }

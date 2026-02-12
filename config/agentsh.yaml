@@ -54,6 +54,44 @@ sandbox:
   seccomp:
     enabled: false  # Disabled - requires privileged mode
 
+# Landlock LSM - Kernel-enforced filesystem access control
+# Restricts file access even for root processes (Linux 5.13+)
+landlock:
+  enabled: true
+  allow_execute:
+    - "/usr/bin"
+    - "/usr/sbin"
+    - "/usr/lib"
+    - "/usr/local"
+    - "/bin"
+    - "/sbin"
+    - "/lib"
+    - "/lib64"
+  allow_read:
+    - "/usr"
+    - "/lib"
+    - "/lib64"
+    - "/bin"
+    - "/sbin"
+    - "/etc"
+    - "/proc"
+    - "/sys"
+    - "/dev"
+    - "/run"
+    - "/var/lib/agentsh"
+  allow_write:
+    - "/tmp"
+    - "/var/tmp"
+    - "/dev"
+    - "/home/sandbox"
+    - "/var/lib/agentsh"
+  deny_paths:
+    - "/etc/shadow"
+    - "/etc/sudoers"
+    - "/etc/sudoers.d"
+    - "/var/run/docker.sock"
+    - "/run/docker.sock"
+
 proxy:
   mode: "embedded"
   port: 0
