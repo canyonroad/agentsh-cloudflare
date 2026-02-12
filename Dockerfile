@@ -2,10 +2,10 @@
 # Extends the official Cloudflare Sandbox image with agentsh policy enforcement
 
 # Use Cloudflare's Python sandbox image as base (includes Python 3.11, Node.js 20, Bun)
-FROM docker.io/cloudflare/sandbox:0.7.0-python
+FROM docker.io/cloudflare/sandbox:0.7.2-python
 
 # Cache buster to force rebuild
-ARG CACHE_BUST=20260212-v098
+ARG CACHE_BUST=20260212-sdk072
 RUN echo "Cache bust: ${CACHE_BUST}"
 
 ARG AGENTSH_REPO=canyonroad/agentsh

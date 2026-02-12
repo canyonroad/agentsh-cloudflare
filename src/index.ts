@@ -648,6 +648,15 @@ export default {
       // Get sandbox instance (shared across requests for demo)
       const sandbox = getSandbox(env.SANDBOX, 'demo-sandbox');
 
+      // For demo endpoints, pre-warm the agentsh server with a lightweight
+      // command. The first agentsh exec auto-starts the server which can
+      // take ~30s in Firecracker. Running this once primes it for all
+      // subsequent commands.
+      if (path.startsWith('/demo/')) {
+        await sandbox.exec('agentsh server --config /etc/agentsh/config.yaml &', { timeout: 5000 }).catch(() => {});
+        await sandbox.exec('sleep 2 && agentsh exec --root=/workspace demo -- /bin/bash -c "true"', { timeout: 60000 }).catch(() => {});
+      }
+
       // Route handling
       if (path === '/' || path === '') {
         return new Response(getHtmlTemplate(env.TURNSTILE_SITE_KEY || ''), {
@@ -1022,7 +1031,7 @@ async function handleTerminal(
 async function executeInSandbox(
   sandbox: SandboxInstance,
   command: string,
-  timeout: number = 30000,
+  timeout: number = 60000,
   useAgentsh: boolean = true
 ): Promise<ExecuteResponse> {
   try {
@@ -1068,7 +1077,7 @@ async function executeInSandbox(
 function executeRaw(
   sandbox: SandboxInstance,
   command: string,
-  timeout: number = 30000
+  timeout: number = 60000
 ): Promise<ExecuteResponse> {
   return executeInSandbox(sandbox, command, timeout, false);
 }
