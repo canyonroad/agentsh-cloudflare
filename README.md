@@ -1,31 +1,46 @@
-# agentsh on Cloudflare
+# agentsh on Cloudflare Containers
 
-Proof-of-concept for secure AI agent code execution on Cloudflare's edge network using [agentsh](https://github.com/canyonroad/agentsh).
+Secure AI agent code execution on Cloudflare's edge network using [agentsh](https://github.com/canyonroad/agentsh) inside [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
 
 **Live Demo**: https://agentsh-cloudflare.eran-cf2.workers.dev
 
-## Current Status
+## What This Demonstrates
 
-This POC demonstrates **agentsh policy enforcement** in Cloudflare Sandbox containers running on Firecracker VMs:
+agentsh provides defense-in-depth security for AI agent sandboxes: policy-based command blocking, network interception (eBPF/seccomp), filesystem protection (FUSE + Landlock LSM), and DLP redaction. This project runs agentsh inside Cloudflare Containers to show what works today and what's blocked by the Firecracker VM environment.
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| agentsh installation | ✅ Working | Version 0.9.0 installed |
-| Security mode | ✅ Full | 100% protection score detected |
-| Policy configuration | ✅ Working | Policies at `/etc/agentsh/policies/` |
-| Sandbox API | ✅ Working | Commands via `agentsh exec` |
-| Network: Metadata blocking | ✅ Working | Blocks `169.254.169.254`, `100.100.100.200` |
-| Network: Private IP blocking | ✅ Working | Blocks `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` |
-| Network: External access | ✅ Working | Allowed domains accessible |
-| File IO blocking | ❌ Not working | FUSE causes container crash (see Limitations) |
-| DLP redaction | ❌ Not on stdout | DLP is for API proxy traffic, not command output |
-| Web terminal | ❌ Not available | Preview URLs need custom domain |
+## Security Feature Matrix
 
-### Security Capabilities Detected
+### Firecracker VM (Cloudflare Containers) vs Docker (local `wrangler dev`)
 
-The Cloudflare Sandbox (Firecracker VM) reports the following kernel capabilities:
+| Security Feature | Firecracker (Production) | Docker (Local Dev) | Root Cause |
+|-----------------|-------------------------|-------------------|------------|
+| **Policy enforcement** | Working | Working | Application-level, no kernel dependency |
+| **Network: metadata blocking** | Working | Working | eBPF/proxy interception |
+| **Network: private IP blocking** | Working | Working | eBPF/proxy interception |
+| **Network: external HTTPS** | Working (allowed) | Working (allowed) | Policy allow-list |
+| **Seccomp** | Working | Working | `seccomp_user_notify` available |
+| **Landlock LSM** | **Not available** | Working (ABI v5) | Firecracker kernel has ABI v0 (no Landlock) |
+| **FUSE filesystem** | **Not available** | **Not available** | Seccomp blocks `mount()` in Firecracker; no `/dev/fuse` in Docker |
+| **FUSE deferred mode** | **Hangs** | N/A | Server init still touches FUSE subsystem (bug) |
+| **Filesystem write protection** | **Not enforced** | **Enforced via Landlock** | Needs Landlock (ABI v1+) or FUSE |
+| **DLP redaction** | Proxy traffic only | Proxy traffic only | By design - DLP intercepts API proxy, not stdout |
+| **Audit logging** | Disabled (perf) | Working | SQLite fsync is slow in Firecracker |
+
+### What's Needed from Cloudflare
+
+To enable full filesystem protection in Cloudflare Containers, agentsh needs **one of**:
+
+1. **Landlock LSM support (preferred)** - Upgrade Firecracker guest kernel to Linux 5.13+ with Landlock enabled. The current kernel reports Landlock ABI v0 (= not supported). ABI v1+ would enable kernel-enforced path-based filesystem access control that works even for root processes. This is lightweight and requires no special devices or mount capabilities.
+
+2. **FUSE support** - Allow `mount()` syscall in the Firecracker seccomp profile (or provide `/dev/fuse` with appropriate permissions). Currently `mount()` is blocked by seccomp, which causes the FUSE filesystem setup to hang. agentsh has a `deferred` FUSE mode for environments where `/dev/fuse` becomes available at runtime, but the current server initialization still attempts FUSE subsystem setup, which also hangs.
+
+3. **seccomp-user-notify for filesystem ops** - The kernel does support `seccomp_user_notify` (detected). agentsh could potentially use this to intercept filesystem syscalls instead of FUSE, but this isn't implemented yet.
+
+### Capabilities Detected in Firecracker
 
 ```
+agentsh 0.9.9
+Platform: linux
 Security Mode: full
 Protection Score: 100%
 
@@ -33,192 +48,203 @@ CAPABILITIES
   capabilities_drop        ✓
   cgroups_v2               ✓
   ebpf                     ✓
-  fuse                     ✓ (detected but unusable - see Limitations)
-  landlock_abi             ✓ (v0)
+  fuse                     ✓  (binary detected, but mount() blocked by seccomp)
+  landlock                 -  (kernel does not support Landlock)
+  landlock_abi             ✓  (v0 = not supported; needs v1+)
+  landlock_network         -
+  pid_namespace            -
   seccomp                  ✓
   seccomp_basic            ✓
   seccomp_user_notify      ✓
-  landlock                 -
-  landlock_network         -
-  pid_namespace            -
 ```
 
-### How It Works
+### Capabilities Detected in Local Docker (host kernel 6.18)
 
-All commands are executed through `agentsh exec`, which:
-1. Auto-starts the agentsh server if not running
-2. Applies security policy to each command
-3. Blocks network access to forbidden destinations via eBPF/proxy interception
-4. Returns policy violation messages for blocked operations
+```
+agentsh 0.9.9
+Security Mode: landlock-only
+Protection Score: 80%
 
-## Limitations
+CAPABILITIES
+  capabilities_drop        ✓
+  cgroups_v2               ✓
+  ebpf                     ✓
+  fuse                     -  (no /dev/fuse in Docker)
+  landlock                 ✓
+  landlock_abi             ✓  (v5)
+  landlock_network         ✓
+  pid_namespace            -
+  seccomp                  ✓
+  seccomp_basic            ✓
+  seccomp_user_notify      ✓
+```
 
-### FUSE / File IO Blocking
+## Detailed Findings
 
-While the kernel reports FUSE support (`/dev/fuse` exists), actually mounting a FUSE filesystem causes the Firecracker container to hang and disconnect. This is likely due to:
-- Privilege restrictions in Cloudflare's container runtime
-- Firecracker VM limitations on FUSE operations
+### FUSE: Blocked by Firecracker seccomp
 
-**Impact**: File system interception is not available. Commands can write to any location the user has permissions for (including `/etc/`).
+The Firecracker VM has `CAP_SYS_ADMIN` and `fusermount3` is installed, so `agentsh detect` reports `fuse ✓`. However, the Firecracker seccomp profile blocks the `mount()` syscall. When agentsh tries to set up a FUSE overlay filesystem:
 
-### DLP Redaction
+- **Non-deferred mode** (`fuse.enabled: true`): The server hangs during session creation when attempting `mount()`. The Firecracker seccomp silently blocks the syscall, causing the FUSE mount to wait indefinitely. The agentsh server becomes unresponsive, and all subsequent `agentsh exec` commands timeout.
 
-DLP (Data Loss Prevention) is configured but only applies to traffic through the agentsh API proxy, not to command stdout. Echoing API keys or secrets will show them in plain text.
+- **Deferred mode** (`fuse.enabled: true, deferred: true`): agentsh supports lazy FUSE mounting (mount on first exec, not session creation). However, the server initialization still sets up the FUSE subsystem (platform detection, filesystem interceptor init), which also hangs. This appears to be a bug in agentsh v0.9.9 - deferred mode should fully skip FUSE init at startup.
 
-### Web Terminal
+- **Workaround**: `fuse.enabled: false`. This is the only reliable configuration for Firecracker.
 
-The web terminal (ttyd) requires Cloudflare Preview URLs with custom domain and wildcard DNS configuration.
+**History**: This has been toggled multiple times in this repo's git history:
+```
+16c5919 fix: disable FUSE - Firecracker has CAP_SYS_ADMIN but seccomp blocks mount
+a1ba2e9 Upgrade agentsh to v0.9.2 and re-enable FUSE
+79e497f fix: disable FUSE - Firecracker has CAP_SYS_ADMIN but seccomp blocks mount
+eac84ed Upgrade agentsh to v0.9.1 and re-enable FUSE
+```
 
-## Features
+### Landlock: Kernel too old
 
-- **Network Control** - Blocks cloud metadata services, private networks, malicious domains
-- **Policy Enforcement** - Commands run through agentsh exec with policy checks
-- **eBPF + Seccomp** - Kernel-level security primitives available
+Landlock LSM (Linux Security Module) provides kernel-enforced path-based filesystem access control. It's the ideal solution for restricting file access in containers because:
+- Works even for root processes
+- No special devices or mount permissions needed
+- Minimal performance overhead
+- Default-deny model with explicit allow-lists
+
+The Firecracker guest kernel reports Landlock ABI v0, which means Landlock is **not supported**. Landlock was introduced in Linux 5.13 (ABI v1). The current ABI versions are:
+- v1: Basic filesystem access control (Linux 5.13)
+- v2: File refer/reparent (Linux 5.19)
+- v3: File truncation (Linux 6.2)
+- v4: Network TCP bind/connect (Linux 6.7)
+- v5: ioctl restrictions (Linux 6.10)
+
+When running locally with `wrangler dev` (Docker), agentsh uses the host kernel which has Landlock ABI v5. This provides full filesystem protection:
+```
+$ echo "hacked" >> /etc/passwd
+/bin/bash: line 1: /etc/passwd: Permission denied
+
+$ touch /usr/bin/malware
+touch: cannot touch '/usr/bin/malware': Permission denied
+```
+
+The Landlock configuration is kept in `config/agentsh.yaml` and will automatically activate when the Firecracker kernel supports it:
+
+```yaml
+landlock:
+  enabled: true
+  allow_write:
+    - "/tmp"
+    - "/var/tmp"
+    - "/dev"
+    - "/home/sandbox"
+    - "/var/lib/agentsh"
+  # Everything else is read-only or no-access
+```
+
+### Seccomp: Working
+
+agentsh's seccomp-bpf filtering works in Firecracker. The `seccomp_user_notify` capability is also detected, which allows intercepting syscalls in userspace. Seccomp blocks dangerous syscalls but does **not** provide path-based filesystem restrictions (that's Landlock's job).
+
+### Audit Logging: Disabled for Performance
+
+SQLite audit logging (`audit.enabled: true`) causes significant performance degradation in Firecracker due to `fsync()` overhead on the virtual disk. It's disabled in the current config. This is a performance issue, not a capability limitation.
+
+### Server Startup: Pre-warm Required
+
+The agentsh server auto-starts on first `agentsh exec` call. In Firecracker, this takes ~30 seconds (vs <1 second in Docker). The Worker code includes a pre-warm step that starts the server before routing to demo endpoints:
+
+```typescript
+if (path.startsWith('/demo/')) {
+  await sandbox.exec('agentsh server --config /etc/agentsh/config.yaml &', { timeout: 5000 });
+  await sandbox.exec('sleep 2 && agentsh exec --root=/workspace demo -- /bin/bash -c "true"', { timeout: 60000 });
+}
+```
+
+Without this, the first `agentsh exec` would timeout with the default 30-second `sandbox.exec()` limit.
+
+## Demo Endpoints
+
+| Method | Path | Tests | Description |
+|--------|------|-------|-------------|
+| GET | `/demo/allowed` | 4 | Safe commands: whoami, pwd, ls, echo |
+| GET | `/demo/blocked` | 3 | Policy-blocked: nc, nmap, metadata curl |
+| GET | `/demo/devtools` | 10 | Python, Node.js, Bun, git, curl, pip3, pipes |
+| GET | `/demo/cloud-metadata` | 6 | AWS, GCP, Azure, DigitalOcean, Alibaba, Oracle |
+| GET | `/demo/ssrf` | 9 | RFC 1918 ranges, link-local, external allowed |
+| GET | `/demo/filesystem` | 8 | Workspace writes, /etc blocking, soft-delete |
+| GET | `/demo/dlp` | 4 | Fake secrets: OpenAI key, AWS key, GitHub PAT |
+| GET | `/demo/network` | - | Network blocking overview |
+| GET | `/health` | - | Health check (no container needed) |
+| POST | `/execute` | - | Execute command (requires Turnstile token) |
+
+**48 automated tests** cover all demo endpoints (`npm test`).
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Cloudflare Edge                          │
-│  ┌─────────────────┐      ┌─────────────────────────────┐  │
-│  │  Worker (API)   │─────▶│  Sandbox Container          │  │
-│  │                 │      │  (Firecracker VM)           │  │
-│  │  POST /execute  │      │  ┌─────────────────────────┐│  │
-│  │  GET /demo/*    │      │  │  agentsh                ││  │
-│  │  GET /health    │      │  │  ├─ policy enforcement  ││  │
-│  │                 │      │  │  ├─ network blocking    ││  │
-│  └─────────────────┘      │  │  └─ eBPF + seccomp      ││  │
-│                           │  └─────────────────────────┘│  │
-│                           └─────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                       Cloudflare Edge                            │
+│                                                                  │
+│  ┌──────────────────┐      ┌──────────────────────────────────┐  │
+│  │  Worker (API)    │      │  Container (Firecracker VM)      │  │
+│  │                  │      │                                  │  │
+│  │  GET /demo/*  ───┼─────▶│  agentsh v0.9.9                 │  │
+│  │  POST /execute   │ exec │  ├─ policy enforcement      ✓   │  │
+│  │  GET /health     │      │  ├─ network blocking (eBPF) ✓   │  │
+│  │                  │      │  ├─ seccomp-bpf             ✓   │  │
+│  │  Rate limiting   │      │  ├─ Landlock LSM            ✗   │  │
+│  │  Turnstile       │      │  ├─ FUSE filesystem         ✗   │  │
+│  │                  │      │  └─ DLP proxy               ✓   │  │
+│  └──────────────────┘      │                                  │  │
+│                            │  Python 3.11 / Node.js 20 / Bun │  │
+│                            └──────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-## API Endpoints
+## Configuration
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Demo web interface |
-| POST | `/execute` | Execute command (requires Turnstile token) |
-| GET | `/demo/cloud-metadata` | Multi-cloud metadata protection demo |
-| GET | `/demo/ssrf` | SSRF attack prevention demo |
-| GET | `/demo/devtools` | Development tools demo |
-| GET | `/demo/network` | Network blocking overview |
-| GET | `/demo/allowed` | Allowed commands demo |
-| GET | `/demo/blocked` | Policy file and blocked commands |
-| GET | `/health` | Health check |
+### Container Image
 
-### Rate Limiting & Bot Protection
+Based on `cloudflare/sandbox:0.7.2-python` with agentsh v0.9.9 installed via `.deb` package. See `Dockerfile`.
 
-The demo is protected against abuse:
-- **Rate limiting**: 10 requests per minute per IP
-- **Turnstile**: Cloudflare CAPTCHA required for `/execute` endpoint
-- Demo endpoints (`/demo/*`) work without Turnstile but are rate limited
+### agentsh Config (`config/agentsh.yaml`)
 
-### Demo Endpoints
+```yaml
+sandbox:
+  enabled: true
+  allow_degraded: true   # Continue without unavailable kernel features
+  fuse:
+    enabled: false       # Firecracker seccomp blocks mount()
+  network:
+    enabled: true
+    intercept_mode: "all" # eBPF/proxy network interception
+  seccomp:
+    enabled: true        # seccomp-bpf works in Firecracker
 
-#### Multi-Cloud Metadata Protection (`/demo/cloud-metadata`)
+landlock:
+  enabled: true          # Config ready; activates when kernel supports it
+  allow_write:
+    - "/tmp"
+    - "/var/tmp"
+    - "/dev"
+    - "/home/sandbox"
+    - "/var/lib/agentsh"
 
-Demonstrates blocking of instance metadata endpoints across all major cloud providers:
-- AWS EC2 (`169.254.169.254`)
-- Google Cloud (`metadata.google.internal`)
-- Azure IMDS (`169.254.169.254`)
-- DigitalOcean (`169.254.169.254`)
-- Alibaba Cloud (`100.100.100.200`)
-- Oracle Cloud (`169.254.169.254`)
-
-#### SSRF Attack Prevention (`/demo/ssrf`)
-
-Demonstrates blocking of Server-Side Request Forgery attack vectors:
-- All RFC 1918 private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
-- Link-local addresses (`169.254.0.0/16`)
-- Cloud metadata endpoints
-- Shows external HTTPS access is allowed for comparison
-
-#### Development Tools (`/demo/devtools`)
-
-Shows that normal development workflows work seamlessly:
-- Python 3.11, Node.js 20, Bun 1.3
-- Git operations
-- External API access (GitHub, httpbin)
-- Pipe operations and workspace access
-
-### Execute Command
-
-Requires a valid Turnstile token when called programmatically:
-
-```bash
-curl -X POST https://agentsh-cloudflare.eran-cf2.workers.dev/execute \
-  -H "Content-Type: application/json" \
-  -d '{"command": "ls -la", "turnstileToken": "your-token"}'
+audit:
+  enabled: false         # Disabled - SQLite fsync too slow in Firecracker
 ```
 
-Response:
-```json
-{
-  "success": true,
-  "stdout": "total 0\ndrwxr-xr-x 1 root root ...",
-  "stderr": "",
-  "exitCode": 0,
-  "blocked": false
-}
-```
+### Security Policy (`policies/default.yaml`)
 
-### Network Blocking Examples
+Enforces:
+- **Network blocking**: Cloud metadata endpoints (AWS, GCP, Azure, DO, Alibaba, Oracle), all RFC 1918 private networks, link-local addresses
+- **Command blocking**: `sudo`, `su`, `ssh`, `nc`, `nmap`, `netcat`, etc.
+- **File rules**: Workspace and /tmp allowed; system paths blocked (only enforced when Landlock/FUSE available)
 
-**Cloud metadata (blocked):**
-```bash
-curl -X POST https://agentsh-cloudflare.eran-cf2.workers.dev/execute \
-  -H "Content-Type: application/json" \
-  -d '{"command": "curl http://169.254.169.254/"}'
-```
+### Wrangler Config (`wrangler.toml`)
 
-Response:
-```json
-{
-  "success": false,
-  "stdout": "blocked by policy",
-  "stderr": "agentsh: blocked by policy (rule=block-metadata-services)...",
-  "exitCode": 0,
-  "blocked": true,
-  "message": "Blocked by policy: block-metadata-services"
-}
-```
+- Container: `instance_type = "basic"` (1/4 vCPU, 1GB RAM, 4GB disk)
+- Max 3 container instances
+- Rate limiting via KV namespace
+- Turnstile bot protection on `/execute`
 
-**Private network (blocked):**
-```bash
-curl -X POST https://agentsh-cloudflare.eran-cf2.workers.dev/execute \
-  -H "Content-Type: application/json" \
-  -d '{"command": "curl http://10.0.0.1/"}'
-```
-
-Response:
-```json
-{
-  "success": false,
-  "stdout": "blocked by policy",
-  "stderr": "agentsh: blocked by policy (rule=block-private-networks)...",
-  "blocked": true,
-  "message": "Blocked by policy: block-private-networks"
-}
-```
-
-**External site (allowed):**
-```bash
-curl -X POST https://agentsh-cloudflare.eran-cf2.workers.dev/execute \
-  -H "Content-Type: application/json" \
-  -d '{"command": "curl -s https://httpbin.org/get | head -3"}'
-```
-
-Response:
-```json
-{
-  "success": true,
-  "stdout": "{\n  \"args\": {}, \n  \"headers\": {",
-  "blocked": false
-}
-```
-
-## Development Setup
+## Development
 
 ### Prerequisites
 
@@ -229,117 +255,62 @@ Response:
 
 ### Local Development
 
-1. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-2. **Build the container** (first time only)
-   ```bash
-   docker build -t agentsh-sandbox .
-   ```
-
-3. **Run locally**
-   ```bash
-   npm run dev
-   ```
-
-4. **Open in browser**
-   ```
-   http://localhost:8787
-   ```
-
-## Deployment
-
-### 1. Configure Wrangler
-
 ```bash
-wrangler login
+npm install
+npm run dev    # Starts wrangler dev with container on localhost:8787
 ```
 
-### 2. Deploy (builds and pushes container automatically)
+### Run Tests
+
+```bash
+npm test       # 48 tests across 8 test files (~30s)
+```
+
+### Deploy
 
 ```bash
 npm run deploy
 ```
 
-Note: If config changes aren't deploying, clear Docker cache:
+**Important**: Cloudflare Containers persist across deploys and don't automatically pick up new images. To force a fresh container:
+
 ```bash
-docker builder prune -a -f
+# List container apps
+npx wrangler containers list
+
+# Delete the old container app (forces recreation on next deploy)
+npx wrangler containers delete <app-id>
+
+# Redeploy
+npm run deploy
 ```
 
-Then update `CACHE_BUST` in Dockerfile and redeploy.
-
-## Security Policy
-
-The default policy (`policies/default.yaml`) enforces:
-
-### Blocked Network Access (Working)
-- Cloud metadata: `169.254.169.254`, `100.100.100.200`
-- Private networks: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
-- Example malicious domains: `evil.com`, `malware.example.com`
-
-### Blocked Commands (Configured but tools not installed)
-- `sudo`, `su`, `doas`, `pkexec` (not installed in container)
-- `ssh`, `scp`, `sftp`, `rsync` (not installed)
-- `nc`, `netcat`, `ncat`, `socat`, `telnet`, `nmap` (not installed)
-
-### Allowed
-- Basic shell commands (`ls`, `cat`, `echo`, etc.)
-- Development tools (`python`, `node`, `bun`)
-- Network access to allowed destinations
-
-## Configuration
-
-### agentsh Config (`config/agentsh.yaml`)
-
-Key settings:
-```yaml
-server:
-  http:
-    addr: "127.0.0.1:18080"  # agentsh client default port
-
-sandbox:
-  enabled: true
-  allow_degraded: true
-  fuse:
-    enabled: false  # Disabled - causes container crash in Firecracker
-  network:
-    enabled: true
-    intercept_mode: "all"
-  cgroups:
-    enabled: false  # Read-only in containers
-  seccomp:
-    enabled: false  # Requires privileged mode
-```
-
-### Modify Security Policy
-
-Edit `policies/default.yaml` to customize network rules:
-
-```yaml
-network_rules:
-  - name: block-custom-domain
-    hosts:
-      - "*.malicious.com"
-    decision: deny
-    message: "Access to malicious.com is blocked"
-```
+Also update the `CACHE_BUST` ARG in `Dockerfile` when config files change, since Docker layer caching may serve stale config.
 
 ## Troubleshooting
 
-### Container disconnecting / commands timing out
-- Check if FUSE is enabled in config (should be `false`)
-- Increase timeout: `{"command": "...", "timeout": 60000}`
+### Container endpoints timing out
 
-### Config changes not deploying
-- Clear Docker cache: `docker builder prune -a -f`
-- Update `CACHE_BUST` arg in Dockerfile
-- Redeploy: `npm run deploy`
+1. **FUSE enabled?** Must be `fuse.enabled: false`. FUSE mount hangs in Firecracker.
+2. **Old container image?** Delete container app and redeploy (see Deploy section).
+3. **First request slow?** Cold boot takes ~60s. The pre-warm step adds ~30s for first `agentsh exec`.
 
-### Network blocking not working
-- Verify agentsh exec is wrapping commands (check Worker code)
-- Check policy file is correctly mounted at `/etc/agentsh/policies/`
+### Filesystem writes not blocked
+
+Expected when running in Firecracker. The kernel doesn't support Landlock (ABI v0) and FUSE can't mount. Filesystem writes only enforced locally via Landlock (host kernel ABI v5).
+
+### Config changes not taking effect
+
+```bash
+docker builder prune -a -f              # Clear Docker cache
+# Update CACHE_BUST in Dockerfile
+npx wrangler containers delete <app-id>  # Delete old container
+npm run deploy                           # Redeploy
+```
+
+### "Durable Object reset" errors after deploy
+
+Transient. Wait 1-2 minutes for the DO to stabilize after a deploy.
 
 ## License
 

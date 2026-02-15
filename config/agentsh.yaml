@@ -27,9 +27,7 @@ sessions:
   cleanup_interval: "5m"
 
 audit:
-  enabled: true
-  storage:
-    sqlite_path: "/var/lib/agentsh/events.db"
+  enabled: false
 
 sandbox:
   enabled: true
@@ -41,7 +39,7 @@ sandbox:
     max_processes: 100
 
   fuse:
-    enabled: true  # FUSE works in production via fusermount path (no /dev/fuse in local wrangler dev)
+    enabled: false  # Firecracker seccomp blocks mount; deferred also hangs on server init
 
   network:
     enabled: true
@@ -52,7 +50,7 @@ sandbox:
     enabled: false  # Typically read-only in containers
 
   seccomp:
-    enabled: false  # Disabled - requires privileged mode
+    enabled: true  # Test seccomp with v0.9.9
 
 # Landlock LSM - Kernel-enforced filesystem access control
 # Restricts file access even for root processes (Linux 5.13+)

@@ -5,7 +5,7 @@
 FROM docker.io/cloudflare/sandbox:0.7.2-python
 
 # Cache buster to force rebuild
-ARG CACHE_BUST=20260212-sdk072
+ARG CACHE_BUST=20260215-seccomp
 RUN echo "Cache bust: ${CACHE_BUST}"
 
 ARG AGENTSH_REPO=canyonroad/agentsh
@@ -26,7 +26,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install agentsh release
-ARG AGENTSH_VERSION=0.9.8
+ARG AGENTSH_VERSION=0.9.9
 RUN set -eux; \
     deb="agentsh_${AGENTSH_VERSION}_linux_${DEB_ARCH}.deb"; \
     url="https://github.com/${AGENTSH_REPO}/releases/download/v${AGENTSH_VERSION}/${deb}"; \
