@@ -942,7 +942,7 @@ async function handleDemoDevTools(
     { cmd: 'python3 --version', desc: 'Python version' },
     { cmd: 'python3 -c "import json; print(json.dumps({\'hello\': \'world\'}))"', desc: 'Python JSON' },
     { cmd: 'node --version', desc: 'Node.js version' },
-    { cmd: 'node -e "console.log(JSON.stringify({message: \'Hello from Node.js\'}))"', desc: 'Node.js execution' },
+    { cmd: 'node -e "console.log(JSON.stringify({message: \'Hello from Node.js\'}))"', desc: 'Node.js inline (slow in Firecracker)' },
     { cmd: 'bun --version', desc: 'Bun version' },
     { cmd: 'pip3 list 2>/dev/null | head -10', desc: 'Python packages (first 10)' },
     { cmd: 'which git && git --version', desc: 'Git version' },
