@@ -8,20 +8,20 @@ import { expectAllowed } from "./helpers/assertions";
 
 describe("Filesystem Protection", () => {
 	let data: DemoResponse;
-	let landlockAvailable: boolean;
+	let filesystemEnforced: boolean;
 
 	beforeAll(async () => {
 		data = await fetchDemo("/demo/filesystem");
-		// Check if Landlock enforcement is actually working by checking a blocked operation.
-		// Landlock may be detected as available by the kernel but not enforced if the
-		// agentsh-unixwrap wrapper binary doesn't have Landlock support yet.
+		// Check if filesystem enforcement is working (via seccomp file monitor,
+		// Landlock, or FUSE). Seccomp returns "Bad file descriptor" (EBADF),
+		// Landlock returns "Permission denied", FUSE returns "BLOCKED".
 		const etcPasswdResult = findResult(data.results, "/etc/passwd");
 		const output = etcPasswdResult.result.stdout + etcPasswdResult.result.stderr;
-		landlockAvailable = /permission denied|BLOCKED|denied/i.test(output);
+		filesystemEnforced = /permission denied|BLOCKED|denied|EACCES|Bad file descriptor/i.test(output);
 	}, 120_000);
 
 	it("reports security status", () => {
-		const r = findResult(data.results, "FUSE + Landlock status");
+		const r = findResult(data.results, "security capabilities");
 		expect(r.result.success).toBe(true);
 	});
 
@@ -38,42 +38,42 @@ describe("Filesystem Protection", () => {
 	});
 
 	it("blocks writing to /etc/passwd", () => {
-		if (!landlockAvailable) return; // skip without Landlock - root can write to /etc
+		if (!filesystemEnforced) return; // skip without seccomp file monitor or Landlock
 		const r = findResult(data.results, "/etc/passwd");
 		expect(r.result.stdout + r.result.stderr).toMatch(
-			/permission denied|read-only|BLOCKED|denied/i,
+			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor/i,
 		);
 	});
 
 	it("blocks writing to /etc/shadow", () => {
-		if (!landlockAvailable) return; // skip without Landlock - root can write to /etc/shadow
+		if (!filesystemEnforced) return;
 		const r = findResult(data.results, "/etc/shadow");
 		expect(r.result.stdout + r.result.stderr).toMatch(
-			/permission denied|read-only|BLOCKED|denied/i,
+			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor/i,
 		);
 	});
 
 	it("blocks creating files in /usr/bin", () => {
-		if (!landlockAvailable) return; // skip without Landlock
+		if (!filesystemEnforced) return;
 		const r = findResult(data.results, "/usr/bin/malware");
 		expect(r.result.stdout + r.result.stderr).toMatch(
-			/permission denied|read-only|BLOCKED|denied/i,
+			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor/i,
 		);
 	});
 
 	it("blocks overwriting agentsh config", () => {
-		if (!landlockAvailable) return; // skip without Landlock
+		if (!filesystemEnforced) return;
 		const r = findResult(data.results, "agentsh config");
 		expect(r.result.stdout + r.result.stderr).toMatch(
-			/permission denied|read-only|BLOCKED|denied/i,
+			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor/i,
 		);
 	});
 
 	it("blocks writing to /etc/sudoers", () => {
-		if (!landlockAvailable) return; // skip without Landlock
+		if (!filesystemEnforced) return;
 		const r = findResult(data.results, "/etc/sudoers");
 		expect(r.result.stdout + r.result.stderr).toMatch(
-			/permission denied|BLOCKED|denied/i,
+			/permission denied|BLOCKED|denied|EACCES|Bad file descriptor/i,
 		);
 	});
 });

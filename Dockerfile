@@ -5,7 +5,7 @@
 FROM docker.io/cloudflare/sandbox:0.7.2-python
 
 # Cache buster to force rebuild
-ARG CACHE_BUST=20260215-seccomp
+ARG CACHE_BUST=20260219-seccomp-file-monitor
 RUN echo "Cache bust: ${CACHE_BUST}"
 
 ARG AGENTSH_REPO=canyonroad/agentsh

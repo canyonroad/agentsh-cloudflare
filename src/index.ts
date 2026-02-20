@@ -972,46 +972,46 @@ async function handleDemoFilesystem(
 ): Promise<Response> {
   const results: DemoResult[] = [];
 
-  // 1. Show security capabilities (FUSE + Landlock)
-  const detectResult = await executeRaw(sandbox, 'agentsh detect 2>&1 | grep -E "fuse|landlock|Security Mode|Protection"');
-  results.push({ command: 'agentsh detect (FUSE + Landlock status)', result: detectResult });
+  // 1. Show security capabilities (seccomp file monitor + Landlock)
+  const detectResult = await executeRaw(sandbox, 'agentsh detect 2>&1 | grep -E "fuse|landlock|seccomp|Security Mode|Protection"');
+  results.push({ command: 'agentsh detect (security capabilities)', result: detectResult });
 
-  // 2. Workspace writes - ALLOWED (workspace has full access)
+  // 2. Workspace writes - ALLOWED (workspace has full access per file_rules)
   const workspaceWrite = await executeInSandbox(sandbox, 'echo "hello from agent" > /workspace/test.txt && cat /workspace/test.txt');
   results.push({ command: 'Write to /workspace/test.txt (ALLOWED)', result: workspaceWrite });
 
-  // 3. Temp writes - ALLOWED (/tmp is writable)
+  // 3. Temp writes - ALLOWED (/tmp is writable per file_rules)
   const tmpWrite = await executeInSandbox(sandbox, 'echo "temp data" > /tmp/test.txt && cat /tmp/test.txt');
   results.push({ command: 'Write to /tmp/test.txt (ALLOWED)', result: tmpWrite });
 
-  // 4. Write to /etc/passwd - BLOCKED by Landlock (read-only path)
+  // 4. Write to /etc/passwd - BLOCKED by seccomp file monitor / Landlock
   const etcPasswd = await executeInSandbox(sandbox, 'echo "hacked" >> /etc/passwd 2>&1; echo "exit=$?"');
   results.push({ command: 'Write to /etc/passwd (BLOCKED)', result: etcPasswd });
 
-  // 5. Write to /etc/shadow - BLOCKED by Landlock (read-only path, no write access to /etc)
+  // 5. Write to /etc/shadow - BLOCKED (sensitive path denied by policy)
   const etcShadow = await executeInSandbox(sandbox, 'echo "hacked" >> /etc/shadow 2>&1; echo "exit=$?"');
   results.push({ command: 'Write to /etc/shadow (BLOCKED)', result: etcShadow });
 
-  // 6. Write to system binary dir - BLOCKED by Landlock (read-only path)
+  // 6. Write to system binary dir - BLOCKED (system paths are read-only)
   const usrBinWrite = await executeInSandbox(sandbox, 'touch /usr/bin/malware 2>&1; echo "exit=$?"');
   results.push({ command: 'Create /usr/bin/malware (BLOCKED)', result: usrBinWrite });
 
-  // 7. Overwrite agentsh config - BLOCKED by Landlock (read-only path)
+  // 7. Overwrite agentsh config - BLOCKED (not in writable paths)
   const overwriteConfig = await executeInSandbox(sandbox, 'echo "hacked" > /etc/agentsh/config.yaml 2>&1; echo "exit=$?"');
   results.push({ command: 'Overwrite agentsh config (BLOCKED)', result: overwriteConfig });
 
-  // 8. Delete workspace file (soft-delete via FUSE) - file goes to trash
-  const softDelete = await executeInSandbox(sandbox, 'rm /workspace/test.txt 2>&1 && echo "deleted" && ls /workspace/test.txt 2>&1; echo "exit=$?"');
-  results.push({ command: 'Delete workspace file (soft-delete)', result: softDelete });
+  // 8. Delete workspace file - allowed (workspace has full access)
+  const deleteFile = await executeInSandbox(sandbox, 'rm /workspace/test.txt 2>&1 && echo "deleted" && ls /workspace/test.txt 2>&1; echo "exit=$?"');
+  results.push({ command: 'Delete workspace file', result: deleteFile });
 
-  // 9. Privilege escalation via file - BLOCKED by Landlock (denied path)
+  // 9. Privilege escalation via file - BLOCKED (sensitive path denied by policy)
   const sudoersWrite = await executeInSandbox(sandbox, 'echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers 2>&1; echo "exit=$?"');
   results.push({ command: 'Write to /etc/sudoers (BLOCKED)', result: sudoersWrite });
 
   return Response.json({
-    title: 'Filesystem Protection (FUSE + Landlock)',
-    description: 'agentsh uses two kernel-level mechanisms for filesystem protection: FUSE intercepts workspace file operations (auditing, soft-delete, policy enforcement), while Landlock LSM restricts filesystem access at the kernel level — even for root processes. Write access is limited to /workspace and /tmp.',
-    note: 'Landlock (Linux 5.13+) provides kernel-enforced path-based access control. FUSE provides workspace-level monitoring and soft-delete. Together they provide defense-in-depth filesystem protection.',
+    title: 'Filesystem Protection (Seccomp File Monitor + Landlock)',
+    description: 'agentsh uses seccomp_unotify to intercept file syscalls (openat, unlinkat, mkdirat, etc.) and enforce file access policy. In Firecracker where FUSE and Landlock are unavailable, seccomp file monitoring provides kernel-level filesystem protection. Write access is limited to /workspace, /tmp, and /home/sandbox.',
+    note: 'Seccomp file monitoring intercepts filesystem syscalls via seccomp_unotify, reads paths from process memory, and enforces file_rules policy. Landlock provides additional defense-in-depth where the kernel supports it (Linux 5.13+).',
     results
   }, { headers });
 }

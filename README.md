@@ -19,22 +19,20 @@ agentsh provides defense-in-depth security for AI agent sandboxes: policy-based 
 | **Network: private IP blocking** | Working | Working | eBPF/proxy interception |
 | **Network: external HTTPS** | Working (allowed) | Working (allowed) | Policy allow-list |
 | **Seccomp** | Working | Working | `seccomp_user_notify` available |
+| **Seccomp file monitor** | **Working** | **Working** | Intercepts file syscalls via `seccomp_unotify` |
 | **Landlock LSM** | **Not available** | Working (ABI v5) | Firecracker kernel has ABI v0 (no Landlock) |
 | **FUSE filesystem** | **Not available** | **Not available** | Seccomp blocks `mount()` in Firecracker; no `/dev/fuse` in Docker |
-| **FUSE deferred mode** | **Hangs** | N/A | Server init still touches FUSE subsystem (bug) |
-| **Filesystem write protection** | **Not enforced** | **Enforced via Landlock** | Needs Landlock (ABI v1+) or FUSE |
+| **Filesystem write protection** | **Enforced via seccomp** | **Enforced via Landlock + seccomp** | Seccomp file monitor enforces file_rules policy |
 | **DLP redaction** | Proxy traffic only | Proxy traffic only | By design - DLP intercepts API proxy, not stdout |
 | **Audit logging** | Disabled (perf) | Working | SQLite fsync is slow in Firecracker |
 
 ### What's Needed from Cloudflare
 
-To enable full filesystem protection in Cloudflare Containers, agentsh needs **one of**:
+Filesystem protection now works in Firecracker via **seccomp file monitoring** (`seccomp_unotify`). To enable additional defense-in-depth layers:
 
-1. **Landlock LSM support (preferred)** - Upgrade Firecracker guest kernel to Linux 5.13+ with Landlock enabled. The current kernel reports Landlock ABI v0 (= not supported). ABI v1+ would enable kernel-enforced path-based filesystem access control that works even for root processes. This is lightweight and requires no special devices or mount capabilities.
+1. **Landlock LSM support (preferred for defense-in-depth)** - Upgrade Firecracker guest kernel to Linux 5.13+ with Landlock enabled. The current kernel reports Landlock ABI v0 (= not supported). ABI v1+ would add kernel-enforced path-based filesystem access control as a second layer alongside seccomp file monitoring.
 
-2. **FUSE support** - Allow `mount()` syscall in the Firecracker seccomp profile (or provide `/dev/fuse` with appropriate permissions). Currently `mount()` is blocked by seccomp, which causes the FUSE filesystem setup to hang. agentsh has a `deferred` FUSE mode for environments where `/dev/fuse` becomes available at runtime, but the current server initialization still attempts FUSE subsystem setup, which also hangs.
-
-3. **seccomp-user-notify for filesystem ops** - The kernel does support `seccomp_user_notify` (detected). agentsh could potentially use this to intercept filesystem syscalls instead of FUSE, but this isn't implemented yet.
+2. **FUSE support (for soft-delete/quarantine)** - Allow `mount()` syscall in the Firecracker seccomp profile (or provide `/dev/fuse` with appropriate permissions). FUSE enables workspace overlay features like soft-delete (quarantine deleted files) and file content hashing that seccomp cannot provide.
 
 ### Capabilities Detected in Firecracker
 
@@ -137,9 +135,12 @@ landlock:
   # Everything else is read-only or no-access
 ```
 
-### Seccomp: Working
+### Seccomp: Working (including file monitoring)
 
-agentsh's seccomp-bpf filtering works in Firecracker. The `seccomp_user_notify` capability is also detected, which allows intercepting syscalls in userspace. Seccomp blocks dangerous syscalls but does **not** provide path-based filesystem restrictions (that's Landlock's job).
+agentsh's seccomp-bpf filtering works in Firecracker. The `seccomp_user_notify` capability is detected and used for:
+- **Execve interception**: Policy-based command blocking at the syscall level
+- **File monitoring**: Intercepts `openat`, `unlinkat`, `mkdirat`, `renameat2`, `linkat`, `symlinkat`, `fchmodat`, `fchownat` via `seccomp_unotify`. Reads target paths from process memory (`/proc/[pid]/mem`) and enforces `file_rules` policy. This provides path-based filesystem protection even without Landlock or FUSE.
+- **Network monitoring**: Unix socket syscall interception
 
 ### Audit Logging: Disabled for Performance
 
@@ -188,8 +189,9 @@ Without this, the first `agentsh exec` would timeout with the default 30-second 
 │  │  POST /execute   │ exec │  ├─ policy enforcement      ✓   │  │
 │  │  GET /health     │      │  ├─ network blocking (eBPF) ✓   │  │
 │  │                  │      │  ├─ seccomp-bpf             ✓   │  │
-│  │  Rate limiting   │      │  ├─ Landlock LSM            ✗   │  │
-│  │  Turnstile       │      │  ├─ FUSE filesystem         ✗   │  │
+│  │  Rate limiting   │      │  ├─ seccomp file monitor    ✓   │  │
+│  │  Turnstile       │      │  ├─ Landlock LSM            ✗   │  │
+│  │                  │      │  ├─ FUSE filesystem         ✗   │  │
 │  │                  │      │  └─ DLP proxy               ✓   │  │
 │  └──────────────────┘      │                                  │  │
 │                            │  Python 3.11 / Node.js 20 / Bun │  │
@@ -216,6 +218,9 @@ sandbox:
     intercept_mode: "all" # eBPF/proxy network interception
   seccomp:
     enabled: true        # seccomp-bpf works in Firecracker
+    file_monitor:
+      enabled: true               # Intercept file syscalls via seccomp_unotify
+      enforce_without_fuse: true   # Enforce file policy even without FUSE
 
 landlock:
   enabled: true          # Config ready; activates when kernel supports it
@@ -235,7 +240,7 @@ audit:
 Enforces:
 - **Network blocking**: Cloud metadata endpoints (AWS, GCP, Azure, DO, Alibaba, Oracle), all RFC 1918 private networks, link-local addresses
 - **Command blocking**: `sudo`, `su`, `ssh`, `nc`, `nmap`, `netcat`, etc.
-- **File rules**: Workspace and /tmp allowed; system paths blocked (only enforced when Landlock/FUSE available)
+- **File rules**: Workspace and /tmp allowed; system paths blocked (enforced via seccomp file monitor; additionally via Landlock where kernel supports it)
 
 ### Wrangler Config (`wrangler.toml`)
 
@@ -297,7 +302,7 @@ Also update the `CACHE_BUST` ARG in `Dockerfile` when config files change, since
 
 ### Filesystem writes not blocked
 
-Expected when running in Firecracker. The kernel doesn't support Landlock (ABI v0) and FUSE can't mount. Filesystem writes only enforced locally via Landlock (host kernel ABI v5).
+Ensure `seccomp.file_monitor.enabled: true` and `seccomp.file_monitor.enforce_without_fuse: true` in `config/agentsh.yaml`. The seccomp file monitor intercepts filesystem syscalls and enforces `file_rules` from the security policy. Landlock provides additional defense-in-depth locally (host kernel ABI v5) but is not available in Firecracker (ABI v0).
 
 ### Config changes not taking effect
 

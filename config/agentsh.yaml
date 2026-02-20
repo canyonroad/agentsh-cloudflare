@@ -50,7 +50,10 @@ sandbox:
     enabled: false  # Typically read-only in containers
 
   seccomp:
-    enabled: true  # Test seccomp with v0.9.9
+    enabled: true  # seccomp-bpf works in Firecracker
+    file_monitor:
+      enabled: true               # Intercept file syscalls via seccomp_unotify
+      enforce_without_fuse: true   # Enforce file policy even without FUSE
 
 # Landlock LSM - Kernel-enforced filesystem access control
 # Restricts file access even for root processes (Linux 5.13+)
