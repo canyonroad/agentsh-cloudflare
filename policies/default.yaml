@@ -86,9 +86,51 @@ file_rules:
       - "/etc/localtime"
       - "/etc/passwd"
       - "/etc/group"
+      - "/etc/nsswitch.conf"
+      - "/etc/ld.so.cache"
+      - "/etc/ld.so.conf"
+      - "/etc/ld.so.conf.d/**"
+      - "/etc/gai.conf"
     operations:
       - read
+      - open
       - stat
+    decision: allow
+
+  # Device files - read access (needed for /dev/urandom, /dev/null, etc.)
+  - name: allow-dev-read
+    description: Read access to device files
+    paths:
+      - "/dev/urandom"
+      - "/dev/random"
+      - "/dev/null"
+      - "/dev/zero"
+      - "/dev/full"
+      - "/dev/tty"
+      - "/dev/stdin"
+      - "/dev/stdout"
+      - "/dev/stderr"
+      - "/dev/fd/**"
+      - "/dev/pts/**"
+    operations:
+      - read
+      - open
+      - write
+      - stat
+    decision: allow
+
+  # Proc/sys - read access (needed for runtime introspection)
+  - name: allow-proc-sys-read
+    description: Read access to proc and sys
+    paths:
+      - "/proc/**"
+      - "/sys/**"
+    operations:
+      - read
+      - open
+      - stat
+      - list
+      - readlink
     decision: allow
 
   # Block sensitive paths
