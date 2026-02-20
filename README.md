@@ -6,7 +6,7 @@ Secure AI agent code execution on Cloudflare's edge network using [agentsh](http
 
 ## What This Demonstrates
 
-agentsh provides defense-in-depth security for AI agent sandboxes: policy-based command blocking, network interception (eBPF/seccomp), filesystem protection (FUSE + Landlock LSM), and DLP redaction. This project runs agentsh inside Cloudflare Containers to show what works today and what's blocked by the Firecracker VM environment.
+agentsh provides defense-in-depth security for AI agent sandboxes: policy-based command blocking, network interception (eBPF/seccomp), filesystem protection (seccomp file monitor + Landlock LSM), and DLP redaction. This project runs agentsh inside Cloudflare Containers to show what works today and what's blocked by the Firecracker VM environment.
 
 ## Security Feature Matrix
 
@@ -296,7 +296,7 @@ Also update the `CACHE_BUST` ARG in `Dockerfile` when config files change, since
 
 ### Container endpoints timing out
 
-1. **FUSE enabled?** Must be `fuse.enabled: false`. FUSE mount hangs in Firecracker.
+1. **FUSE enabled?** Must be `fuse.enabled: false`. FUSE mount hangs in Firecracker. Filesystem protection uses the seccomp file monitor instead.
 2. **Old container image?** Delete container app and redeploy (see Deploy section).
 3. **First request slow?** Cold boot takes ~60s. The pre-warm step adds ~30s for first `agentsh exec`.
 

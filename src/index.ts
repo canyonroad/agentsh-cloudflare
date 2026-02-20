@@ -494,7 +494,7 @@ Try these examples:
       <div class="endpoint">
         <span class="method">GET</span> <span class="path">/demo/filesystem</span>
       </div>
-      <p>FUSE filesystem protection (write blocking, sensitive file access, path traversal)</p>
+      <p>Filesystem protection (seccomp file monitor, write blocking, sensitive file access)</p>
     </div>
   </div>
 
