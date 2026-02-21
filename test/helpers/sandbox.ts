@@ -25,13 +25,21 @@ export interface DemoResponse {
 	policyPath?: string;
 }
 
-/** Fetch a demo endpoint and return the parsed response. */
-export async function fetchDemo(path: string): Promise<DemoResponse> {
-	const res = await fetch(`${BASE_URL}${path}`);
-	if (!res.ok) {
-		throw new Error(`Demo fetch failed: ${res.status} ${await res.text()}`);
+/** Fetch a demo endpoint and return the parsed response.
+ *  Uses AbortController to ensure the fetch is properly cancelled on timeout,
+ *  preventing zombie requests from blocking the sandbox. */
+export async function fetchDemo(path: string, timeoutMs = 290_000): Promise<DemoResponse> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const res = await fetch(`${BASE_URL}${path}`, { signal: controller.signal });
+		if (!res.ok) {
+			throw new Error(`Demo fetch failed: ${res.status} ${await res.text()}`);
+		}
+		return (await res.json()) as DemoResponse;
+	} finally {
+		clearTimeout(timer);
 	}
-	return (await res.json()) as DemoResponse;
 }
 
 /** Execute a single command via the /execute endpoint. */

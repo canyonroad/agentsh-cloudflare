@@ -7,7 +7,7 @@ compatibility_date = "2025-01-01"
 class_name = "Sandbox"
 image = "./Dockerfile"
 instance_type = "basic"  # 1/4 vCPU, 1GB RAM, 4GB disk
-max_instances = 3
+max_instances = 5
 
 # Durable Objects binding for Sandbox
 [[durable_objects.bindings]]

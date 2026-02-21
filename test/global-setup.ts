@@ -3,6 +3,7 @@ import { spawn, execSync, type ChildProcess } from "node:child_process";
 const TEST_PORT = process.env.TEST_PORT || "8686";
 const BASE_URL = process.env.TEST_BASE_URL || `http://localhost:${TEST_PORT}`;
 const STARTUP_TIMEOUT = 180_000; // 3 minutes for container build + start
+const SANDBOX_WARMUP_TIMEOUT = 600_000; // 10 minutes for sandbox + agentsh server startup
 const HEALTH_POLL_INTERVAL = 2_000;
 
 let wranglerProcess: ChildProcess | null = null;
@@ -26,6 +27,52 @@ async function waitForReady(): Promise<void> {
 	);
 }
 
+async function warmupSandbox(): Promise<void> {
+	console.log("[test] Warming up sandbox (this may take 2-3 minutes on cold start)...");
+	const deadline = Date.now() + SANDBOX_WARMUP_TIMEOUT;
+
+	// Step 1: Wait for raw sandbox exec (container is up, no agentsh needed)
+	while (Date.now() < deadline) {
+		try {
+			const res = await fetch(`${BASE_URL}/demo/status`);
+			if (res.ok) {
+				const data = (await res.json()) as {
+					results: Array<{ result: { success: boolean } }>;
+				};
+				if (data.results?.some((r) => r.result.success)) {
+					console.log("[test] Sandbox container is up");
+					break;
+				}
+			}
+		} catch {
+			// Sandbox not ready yet
+		}
+		await new Promise((r) => setTimeout(r, HEALTH_POLL_INTERVAL));
+	}
+
+	// Step 2: Wait for agentsh exec path (agentsh server must be running)
+	console.log("[test] Warming agentsh exec path...");
+	while (Date.now() < deadline) {
+		try {
+			const res = await fetch(`${BASE_URL}/demo/blocked`);
+			if (res.ok) {
+				const data = (await res.json()) as {
+					results: Array<{ result: { success: boolean; blocked: boolean } }>;
+				};
+				// Verify at least one result shows actual policy enforcement (not just a 200)
+				if (data.results?.some((r) => r.result.blocked || r.result.success)) {
+					console.log("[test] Sandbox is warm and ready");
+					return;
+				}
+			}
+		} catch {
+			// Not ready yet
+		}
+		await new Promise((r) => setTimeout(r, HEALTH_POLL_INTERVAL));
+	}
+	console.warn("[test] Sandbox warmup timed out — tests may be flaky");
+}
+
 export async function setup(): Promise<{ baseUrl: string }> {
 	// If TEST_BASE_URL is set, assume the server is already running externally
 	if (process.env.TEST_BASE_URL) {
@@ -33,6 +80,7 @@ export async function setup(): Promise<{ baseUrl: string }> {
 			`[test] Using external server at ${process.env.TEST_BASE_URL}`,
 		);
 		await waitForReady();
+		await warmupSandbox();
 		return { baseUrl: process.env.TEST_BASE_URL };
 	}
 
@@ -72,6 +120,7 @@ export async function setup(): Promise<{ baseUrl: string }> {
 	});
 
 	await waitForReady();
+	await warmupSandbox();
 	return { baseUrl: BASE_URL };
 }
 

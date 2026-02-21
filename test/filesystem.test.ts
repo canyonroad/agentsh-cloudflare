@@ -18,7 +18,7 @@ describe("Filesystem Protection", () => {
 		const etcPasswdResult = findResult(data.results, "/etc/passwd");
 		const output = etcPasswdResult.result.stdout + etcPasswdResult.result.stderr;
 		filesystemEnforced = /permission denied|BLOCKED|denied|EACCES|Bad file descriptor/i.test(output);
-	}, 120_000);
+	}, 300_000);
 
 	it("reports security status", () => {
 		const r = findResult(data.results, "security capabilities");

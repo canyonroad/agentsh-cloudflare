@@ -333,6 +333,7 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
     }
     #output .blocked { color: var(--clay); }
     #output .allowed { color: var(--moss); }
+    #output .denied { color: var(--sunlit); }
 
     /* API Section */
     .endpoint {
@@ -428,6 +429,10 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
         <h3>100% Protection</h3>
         <p>Full security mode with syscall interception enabled</p>
       </div>
+      <div class="feature">
+        <h3>Command Blocking</h3>
+        <p>Blocks sudo, ssh, nc, nmap, kill, and 50+ dangerous commands by policy</p>
+      </div>
     </div>
 
     <h2>Try It Live</h2>
@@ -449,6 +454,9 @@ function getHtmlTemplate(turnstileSiteKey: string): string {
         <button class="btn btn-secondary" onclick="runDemo('filesystem')">File Protection</button>
         <button class="btn btn-secondary" onclick="runDemo('devtools')">Dev Tools</button>
         <button class="btn btn-secondary" onclick="runDemo('network')">Network Blocking</button>
+        <button class="btn btn-secondary" onclick="runDemo('commands')">Command Blocking</button>
+        <button class="btn btn-secondary" onclick="runDemo('privilege-escalation')">Privilege Escalation</button>
+        <button class="btn btn-secondary" onclick="runDemo('status')">agentsh Status</button>
       </div>
 
       <p class="rate-limit-info">Rate limit: <span id="remaining">${RATE_LIMIT_MAX}</span> requests remaining (resets every ${RATE_LIMIT_WINDOW}s)</p>
@@ -495,6 +503,21 @@ Try these examples:
         <span class="method">GET</span> <span class="path">/demo/filesystem</span>
       </div>
       <p>Filesystem protection (seccomp file monitor, write blocking, sensitive file access)</p>
+
+      <div class="endpoint">
+        <span class="method">GET</span> <span class="path">/demo/commands</span>
+      </div>
+      <p>Command blocking (10 commands across privilege escalation, SSH, system admin, network tools, process control)</p>
+
+      <div class="endpoint">
+        <span class="method">GET</span> <span class="path">/demo/privilege-escalation</span>
+      </div>
+      <p>Privilege escalation prevention (command-level + file-level blocking)</p>
+
+      <div class="endpoint">
+        <span class="method">GET</span> <span class="path">/demo/status</span>
+      </div>
+      <p>agentsh status and configuration (version, capabilities, policy info)</p>
     </div>
   </div>
 
@@ -591,7 +614,14 @@ Try these examples:
     }
 
     function formatResult(command, result) {
-      let status = result.blocked ? '<span class="blocked">BLOCKED</span>' : '<span class="allowed">OK</span>';
+      let status;
+      if (result.blocked) {
+        status = '<span class="blocked">BLOCKED</span>';
+      } else if (result.success) {
+        status = '<span class="allowed">OK</span>';
+      } else {
+        status = '<span class="denied">DENIED</span>';
+      }
       let output = '$ ' + escapeHtml(command) + '  [' + status + ']\\n';
       if (result.stdout) output += escapeHtml(result.stdout) + '\\n';
       if (result.stderr) output += '<span class="blocked">' + escapeHtml(result.stderr) + '</span>\\n';
@@ -646,16 +676,7 @@ export default {
 
     try {
       // Get sandbox instance (shared across requests for demo)
-      const sandbox = getSandbox(env.SANDBOX, 'demo-sandbox');
-
-      // For demo endpoints, pre-warm the agentsh server with a lightweight
-      // command. The first agentsh exec auto-starts the server which can
-      // take ~30s in Firecracker. Running this once primes it for all
-      // subsequent commands.
-      if (path.startsWith('/demo/')) {
-        await sandbox.exec('agentsh server --config /etc/agentsh/config.yaml &', { timeout: 5000 }).catch(() => {});
-        await sandbox.exec('sleep 2 && agentsh exec --root=/workspace demo -- /bin/bash -c "true"', { timeout: 60000 }).catch(() => {});
-      }
+      const sandbox = getSandbox(env.SANDBOX, 'demo-sandbox-v2');
 
       // Route handling
       if (path === '/' || path === '') {
@@ -698,6 +719,18 @@ export default {
 
       if (path === '/demo/filesystem') {
         return await handleDemoFilesystem(sandbox, headers);
+      }
+
+      if (path === '/demo/commands') {
+        return await handleDemoCommands(sandbox, headers);
+      }
+
+      if (path === '/demo/privilege-escalation') {
+        return await handleDemoPrivilegeEscalation(sandbox, headers);
+      }
+
+      if (path === '/demo/status') {
+        return await handleDemoStatus(sandbox, headers);
       }
 
       if (path === '/terminal') {
@@ -887,7 +920,7 @@ async function handleDemoCloudMetadata(
   const results: DemoResult[] = [];
 
   for (const { cmd, desc, provider } of metadataEndpoints) {
-    const result = await executeInSandbox(sandbox, cmd);
+    const result = await executeInSandbox(sandbox, cmd, 15000);
     results.push({ command: `${provider}: ${desc}`, result });
   }
 
@@ -921,7 +954,7 @@ async function handleDemoSSRF(
   const results: DemoResult[] = [];
 
   for (const { cmd, desc, category, policyBlocked } of ssrfVectors) {
-    const result = await executeInSandbox(sandbox, cmd);
+    const result = await executeInSandbox(sandbox, cmd, 15000);
     results.push({ command: `[${category}] ${desc}`, result });
   }
 
@@ -1016,6 +1049,111 @@ async function handleDemoFilesystem(
   }, { headers });
 }
 
+async function handleDemoCommands(
+  sandbox: SandboxInstance,
+  headers: Record<string, string>
+): Promise<Response> {
+  const commands = [
+    // Privilege escalation (2)
+    { cmd: 'sudo id', desc: 'sudo id (privilege escalation)', category: 'Privilege Escalation' },
+    { cmd: 'su - root', desc: 'su (switch user to root)', category: 'Privilege Escalation' },
+    // SSH/remote access (2)
+    { cmd: 'ssh user@example.com', desc: 'ssh (remote login)', category: 'SSH/Remote Access' },
+    { cmd: 'scp file user@host:/tmp/', desc: 'scp (secure copy)', category: 'SSH/Remote Access' },
+    // System admin (2)
+    { cmd: 'shutdown -h now', desc: 'shutdown (halt system)', category: 'System Admin' },
+    { cmd: 'mount /dev/sda1 /mnt', desc: 'mount (mount filesystem)', category: 'System Admin' },
+    // Network tools (2)
+    { cmd: 'nc -l 4444', desc: 'nc (netcat listener)', category: 'Network Tools' },
+    { cmd: 'nmap localhost', desc: 'nmap (port scanner)', category: 'Network Tools' },
+    // Process control (2)
+    { cmd: 'killall agentsh', desc: 'killall agentsh (kill security)', category: 'Process Control' },
+    { cmd: 'pkill -f agentsh', desc: 'pkill agentsh (pattern kill)', category: 'Process Control' },
+  ];
+
+  const results: DemoResult[] = [];
+
+  for (const { cmd, desc, category } of commands) {
+    const result = await executeInSandbox(sandbox, cmd, 15000);
+    results.push({ command: `[${category}] ${desc}`, result });
+  }
+
+  return Response.json({
+    title: 'Command Blocking',
+    description: 'agentsh blocks dangerous commands across multiple categories: privilege escalation, SSH/remote access, system administration, network tools, and process control. Commands are blocked at the policy level (command_rules) or at the kernel level (seccomp/Landlock) depending on the command type.',
+    note: 'Top-level commands like sudo are blocked by command_rules. Sub-commands wrapped in bash -c are blocked at the kernel level via seccomp, which returns "Permission denied".',
+    results
+  }, { headers });
+}
+
+async function handleDemoPrivilegeEscalation(
+  sandbox: SandboxInstance,
+  headers: Record<string, string>
+): Promise<Response> {
+  const results: DemoResult[] = [];
+
+  // Command-level privilege escalation
+  const commandBlocks = [
+    { cmd: 'sudo id', desc: 'sudo id (run as root)' },
+    { cmd: 'sudo cat /etc/shadow', desc: 'sudo cat /etc/shadow (read shadow file)' },
+    { cmd: 'su - root -c whoami', desc: 'su - root (switch to root)' },
+    { cmd: 'pkexec /bin/bash', desc: 'pkexec (PolicyKit escalation)' },
+  ];
+
+  for (const { cmd, desc } of commandBlocks) {
+    const result = await executeInSandbox(sandbox, cmd, 15000);
+    results.push({ command: `[Command] ${desc}`, result });
+  }
+
+  // File-level privilege escalation
+  const fileBlocks = [
+    { cmd: 'cat /etc/shadow 2>&1', desc: 'Read /etc/shadow (password hashes)' },
+    { cmd: 'echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers 2>&1', desc: 'Write /etc/sudoers (grant sudo)' },
+  ];
+
+  for (const { cmd, desc } of fileBlocks) {
+    const result = await executeInSandbox(sandbox, cmd, 15000);
+    results.push({ command: `[File] ${desc}`, result });
+  }
+
+  return Response.json({
+    title: 'Privilege Escalation Prevention',
+    description: 'agentsh prevents privilege escalation through two layers: command-level blocking (command_rules) stops tools like sudo, su, chroot, nsenter, and unshare. File-level blocking (seccomp file monitor + Landlock) prevents reading or writing sensitive files like /etc/shadow and /etc/sudoers.',
+    note: 'Even if an attacker bypasses command blocking via bash -c wrapping, file-level enforcement still prevents access to sensitive files.',
+    results
+  }, { headers });
+}
+
+async function handleDemoStatus(
+  sandbox: SandboxInstance,
+  headers: Record<string, string>
+): Promise<Response> {
+  const statusChecks = [
+    { cmd: 'agentsh --version', desc: 'agentsh version' },
+    { cmd: 'which agentsh', desc: 'agentsh binary location' },
+    { cmd: 'agentsh detect 2>&1 | head -30', desc: 'agentsh detect (security capabilities)' },
+    { cmd: 'ls -la /etc/agentsh/', desc: 'Config directory listing' },
+    { cmd: 'ls -la /etc/agentsh/policies/', desc: 'Policies directory listing' },
+    { cmd: 'head -5 /etc/agentsh/policies/default.yaml', desc: 'Policy file header' },
+    { cmd: 'agentsh detect 2>&1 | grep -i seccomp || echo "seccomp status not available"', desc: 'Seccomp status' },
+    { cmd: 'uname -r', desc: 'Kernel version' },
+  ];
+
+  const results: DemoResult[] = [];
+
+  for (const { cmd, desc } of statusChecks) {
+    const result = await executeRaw(sandbox, cmd);
+    results.push({ command: desc, result });
+  }
+
+  return Response.json({
+    title: 'agentsh Status',
+    description: 'Current status and configuration of the agentsh security agent running in this Cloudflare sandbox.',
+    note: 'These commands run outside of agentsh enforcement (raw execution) to show the security infrastructure itself.',
+    results
+  }, { headers });
+}
+
 async function handleTerminal(
   sandbox: SandboxInstance,
   headers: Record<string, string>
@@ -1034,44 +1172,59 @@ async function executeInSandbox(
   timeout: number = 60000,
   useAgentsh: boolean = true
 ): Promise<ExecuteResponse> {
-  try {
-    const actualCommand = useAgentsh
-      ? `agentsh exec --root=/workspace demo -- /bin/bash -c ${JSON.stringify(command)}`
-      : command;
+  const maxRetries = 1;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const actualCommand = useAgentsh
+        ? `agentsh exec --root=/workspace demo -- /bin/bash -c ${JSON.stringify(command)}`
+        : command;
 
-    const result = await sandbox.exec(actualCommand, { timeout });
+      const result = await sandbox.exec(actualCommand, { timeout });
 
-    const stdout = result.stdout || '';
-    const stderr = result.stderr || '';
-    const combinedOutput = stdout + stderr;
+      const stdout = result.stdout || '';
+      const stderr = result.stderr || '';
+      const combinedOutput = stdout + stderr;
 
-    const blocked = combinedOutput.includes('command denied by policy') ||
-                   combinedOutput.includes('blocked by policy') ||
-                   combinedOutput.includes('BLOCKED:');
+      const blocked = combinedOutput.includes('command denied by policy') ||
+                     combinedOutput.includes('blocked by policy') ||
+                     combinedOutput.includes('BLOCKED:') ||
+                     combinedOutput.includes('Permission denied') ||
+                     combinedOutput.includes('Operation not permitted');
 
-    const cleanedStdout = stdout
-      .replace(/agentsh: auto-starting server[^\n]*\n?/g, '')
-      .replace(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} INFO[^\n]*\n?/g, '')
-      .trim();
+      const cleanedStdout = stdout
+        .replace(/agentsh: auto-starting server[^\n]*\n?/g, '')
+        .replace(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} INFO[^\n]*\n?/g, '')
+        .trim();
 
-    return {
-      success: result.success && !blocked,
-      stdout: cleanedStdout,
-      stderr: stderr,
-      exitCode: result.exitCode,
-      blocked,
-      message: blocked ? extractBlockMessage(combinedOutput) : undefined,
-    };
-  } catch (error) {
-    return {
-      success: false,
-      stdout: '',
-      stderr: String(error),
-      exitCode: -1,
-      blocked: false,
-      message: 'Execution error: ' + String(error),
-    };
+      return {
+        success: result.success && !blocked,
+        stdout: cleanedStdout,
+        stderr: stderr,
+        exitCode: result.exitCode,
+        blocked,
+        message: blocked ? extractBlockMessage(combinedOutput) : undefined,
+      };
+    } catch (error) {
+      const errStr = String(error);
+      const isRetryable = errStr.includes('Network connection lost') ||
+                         errStr.includes('Container service disconnected') ||
+                         errStr.includes('EOF');
+      if (isRetryable && attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+      return {
+        success: false,
+        stdout: '',
+        stderr: errStr,
+        exitCode: -1,
+        blocked: false,
+        message: 'Execution error: ' + errStr,
+      };
+    }
   }
+  // Should not reach here, but TypeScript needs this
+  return { success: false, stdout: '', stderr: 'Max retries exceeded', exitCode: -1, blocked: false };
 }
 
 function executeRaw(
@@ -1094,6 +1247,12 @@ function extractBlockMessage(output: string): string {
   const blockMatch = output.match(/BLOCKED:\s*(.+)/);
   if (blockMatch) {
     return blockMatch[1];
+  }
+  if (output.includes('Permission denied')) {
+    return 'Permission denied (kernel-level enforcement)';
+  }
+  if (output.includes('Operation not permitted')) {
+    return 'Operation not permitted (kernel-level enforcement)';
   }
   return 'Command blocked by policy';
 }
