@@ -787,27 +787,20 @@ async function handleDemoBlocked(
   sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
-  // Show the policy file first (using raw execution)
-  const policyResult = await executeRaw(sandbox, 'cat /etc/agentsh/policies/default.yaml | head -50');
-
-  // These commands ARE blocked by the agentsh policy
-  const blockedCommands = [
-    { cmd: 'nc -h', reason: 'network tool blocked' },
-    { cmd: 'nmap --version', reason: 'network scanner blocked' },
-    { cmd: 'curl http://169.254.169.254/latest/meta-data/', reason: 'cloud metadata blocked' },
-  ];
+  // Run policy display and blocked commands with limited concurrency
+  const [policyResult, ...blockedResults] = await runParallel([
+    () => executeRaw(sandbox, 'cat /etc/agentsh/policies/default.yaml | head -50'),
+    () => executeInSandbox(sandbox, 'nc -h'),
+    () => executeInSandbox(sandbox, 'nmap --version'),
+    () => executeInSandbox(sandbox, 'curl http://169.254.169.254/latest/meta-data/'),
+  ]);
 
   const results: DemoResult[] = [
     { command: 'Policy file (head -50)', result: policyResult },
+    { command: 'nc -h (network tool blocked)', result: blockedResults[0] },
+    { command: 'nmap --version (network scanner blocked)', result: blockedResults[1] },
+    { command: 'curl http://169.254.169.254/latest/meta-data/ (cloud metadata blocked)', result: blockedResults[2] },
   ];
-
-  for (const { cmd, reason } of blockedCommands) {
-    const result = await executeInSandbox(sandbox, cmd);
-    results.push({
-      command: `${cmd} (${reason})`,
-      result
-    });
-  }
 
   return Response.json({
     description: 'agentsh policy enforcement is ACTIVE. These commands are blocked by policy.',
@@ -821,31 +814,29 @@ async function handleDemoAllowed(
   sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
-  // Show agentsh installation (using raw execution for system checks)
-  const agentshVersion = await executeRaw(sandbox, 'agentsh --version');
-  const agentshLocation = await executeRaw(sandbox, 'which agentsh');
-  const configCheck = await executeRaw(sandbox, 'ls -la /etc/agentsh/');
-  const detectResult = await executeRaw(sandbox, 'agentsh detect 2>&1 | head -20');
-
-  // These are safe commands that are allowed by policy
-  const allowedCommands = [
-    'whoami',
-    'pwd',
-    'ls -la /workspace',
-    'echo "Hello from agentsh sandbox!"',
-  ];
+  // Run all checks with limited concurrency
+  const [agentshVersion, agentshLocation, configCheck, detectResult,
+         whoamiResult, pwdResult, lsResult, echoResult] = await runParallel([
+    () => executeRaw(sandbox, 'agentsh --version'),
+    () => executeRaw(sandbox, 'which agentsh'),
+    () => executeRaw(sandbox, 'ls -la /etc/agentsh/'),
+    () => executeRaw(sandbox, 'agentsh detect 2>&1 | head -20'),
+    () => executeInSandbox(sandbox, 'whoami'),
+    () => executeInSandbox(sandbox, 'pwd'),
+    () => executeInSandbox(sandbox, 'ls -la /workspace'),
+    () => executeInSandbox(sandbox, 'echo "Hello from agentsh sandbox!"'),
+  ]);
 
   const results: DemoResult[] = [
     { command: 'agentsh --version', result: agentshVersion },
     { command: 'which agentsh', result: agentshLocation },
     { command: 'ls -la /etc/agentsh/', result: configCheck },
     { command: 'agentsh detect (security capabilities)', result: detectResult },
+    { command: 'whoami', result: whoamiResult },
+    { command: 'pwd', result: pwdResult },
+    { command: 'ls -la /workspace', result: lsResult },
+    { command: 'echo "Hello from agentsh sandbox!"', result: echoResult },
   ];
-
-  for (const cmd of allowedCommands) {
-    const result = await executeInSandbox(sandbox, cmd);
-    results.push({ command: cmd, result });
-  }
 
   return Response.json({
     description: 'agentsh is installed with full security capabilities. These commands are allowed by policy.',
@@ -866,12 +857,13 @@ async function handleDemoDLP(
     'echo "Email: user@example.com Phone: 555-123-4567"',
   ];
 
-  const results: DemoResult[] = [];
+  const dlpResults = await runParallel(
+    dlpCommands.map(cmd => () => executeInSandbox(sandbox, cmd))
+  );
 
-  for (const cmd of dlpCommands) {
-    const result = await executeInSandbox(sandbox, cmd);
-    results.push({ command: cmd, result });
-  }
+  const results: DemoResult[] = dlpCommands.map((cmd, i) => ({
+    command: cmd, result: dlpResults[i]
+  }));
 
   return Response.json({
     description: 'DLP redaction (note: only works on API proxy traffic, not command stdout)',
@@ -890,12 +882,13 @@ async function handleDemoNetwork(
     { cmd: 'curl -s --connect-timeout 5 https://httpbin.org/get 2>&1 | head -5 || true', desc: 'External site (ALLOWED)' },
   ];
 
-  const results: DemoResult[] = [];
+  const networkResults = await runParallel(
+    networkCommands.map(({ cmd }) => () => executeInSandbox(sandbox, cmd, 15000))
+  );
 
-  for (const { cmd, desc } of networkCommands) {
-    const result = await executeInSandbox(sandbox, cmd);
-    results.push({ command: desc, result });
-  }
+  const results: DemoResult[] = networkCommands.map(({ desc }, i) => ({
+    command: desc, result: networkResults[i]
+  }));
 
   return Response.json({
     description: 'Network policy blocks cloud metadata and private networks, allows external access',
@@ -917,12 +910,13 @@ async function handleDemoCloudMetadata(
     { cmd: 'curl -s --connect-timeout 2 http://169.254.169.254/opc/v1/instance/ 2>&1', desc: 'Oracle Cloud Metadata', provider: 'Oracle' },
   ];
 
-  const results: DemoResult[] = [];
+  const metadataResults = await runParallel(
+    metadataEndpoints.map(({ cmd }) => () => executeInSandbox(sandbox, cmd, 15000))
+  );
 
-  for (const { cmd, desc, provider } of metadataEndpoints) {
-    const result = await executeInSandbox(sandbox, cmd, 15000);
-    results.push({ command: `${provider}: ${desc}`, result });
-  }
+  const results: DemoResult[] = metadataEndpoints.map(({ desc, provider }, i) => ({
+    command: `${provider}: ${desc}`, result: metadataResults[i]
+  }));
 
   return Response.json({
     title: 'Multi-Cloud Metadata Protection',
@@ -951,12 +945,13 @@ async function handleDemoSSRF(
     { cmd: 'curl -s --connect-timeout 3 https://httpbin.org/ip 2>&1', desc: 'httpbin.org (External)', category: 'External', policyBlocked: false },
   ];
 
-  const results: DemoResult[] = [];
+  const ssrfResults = await runParallel(
+    ssrfVectors.map(({ cmd }) => () => executeInSandbox(sandbox, cmd, 15000))
+  );
 
-  for (const { cmd, desc, category, policyBlocked } of ssrfVectors) {
-    const result = await executeInSandbox(sandbox, cmd, 15000);
-    results.push({ command: `[${category}] ${desc}`, result });
-  }
+  const results: DemoResult[] = ssrfVectors.map(({ desc, category }, i) => ({
+    command: `[${category}] ${desc}`, result: ssrfResults[i]
+  }));
 
   return Response.json({
     title: 'SSRF Attack Prevention',
@@ -984,12 +979,13 @@ async function handleDemoDevTools(
     { cmd: 'ls -la /workspace', desc: 'Workspace directory' },
   ];
 
-  const results: DemoResult[] = [];
+  const devToolResults = await runParallel(
+    devToolCommands.map(({ cmd }) => () => executeInSandbox(sandbox, cmd))
+  );
 
-  for (const { cmd, desc } of devToolCommands) {
-    const result = await executeInSandbox(sandbox, cmd);
-    results.push({ command: desc, result });
-  }
+  const results: DemoResult[] = devToolCommands.map(({ desc }, i) => ({
+    command: desc, result: devToolResults[i]
+  }));
 
   return Response.json({
     title: 'Development Tools Demo',
@@ -1003,43 +999,33 @@ async function handleDemoFilesystem(
   sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
-  const results: DemoResult[] = [];
+  // Phase 1: Run all independent checks with limited concurrency
+  const [detectResult, workspaceWrite, tmpWrite, etcPasswd, etcShadow,
+         usrBinWrite, overwriteConfig, sudoersWrite] = await runParallel([
+    () => executeRaw(sandbox, 'agentsh detect 2>&1 | grep -E "fuse|landlock|seccomp|Security Mode|Protection"'),
+    () => executeInSandbox(sandbox, 'echo "hello from agent" > /workspace/test.txt && cat /workspace/test.txt'),
+    () => executeInSandbox(sandbox, 'echo "temp data" > /tmp/test.txt && cat /tmp/test.txt'),
+    () => executeInSandbox(sandbox, 'echo "hacked" >> /etc/passwd 2>&1; echo "exit=$?"'),
+    () => executeInSandbox(sandbox, 'echo "hacked" >> /etc/shadow 2>&1; echo "exit=$?"'),
+    () => executeInSandbox(sandbox, 'touch /usr/bin/malware 2>&1; echo "exit=$?"'),
+    () => executeInSandbox(sandbox, 'echo "hacked" > /etc/agentsh/config.yaml 2>&1; echo "exit=$?"'),
+    () => executeInSandbox(sandbox, 'echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers 2>&1; echo "exit=$?"'),
+  ]);
 
-  // 1. Show security capabilities (seccomp file monitor + Landlock)
-  const detectResult = await executeRaw(sandbox, 'agentsh detect 2>&1 | grep -E "fuse|landlock|seccomp|Security Mode|Protection"');
-  results.push({ command: 'agentsh detect (security capabilities)', result: detectResult });
-
-  // 2. Workspace writes - ALLOWED (workspace has full access per file_rules)
-  const workspaceWrite = await executeInSandbox(sandbox, 'echo "hello from agent" > /workspace/test.txt && cat /workspace/test.txt');
-  results.push({ command: 'Write to /workspace/test.txt (ALLOWED)', result: workspaceWrite });
-
-  // 3. Temp writes - ALLOWED (/tmp is writable per file_rules)
-  const tmpWrite = await executeInSandbox(sandbox, 'echo "temp data" > /tmp/test.txt && cat /tmp/test.txt');
-  results.push({ command: 'Write to /tmp/test.txt (ALLOWED)', result: tmpWrite });
-
-  // 4. Write to /etc/passwd - BLOCKED by seccomp file monitor / Landlock
-  const etcPasswd = await executeInSandbox(sandbox, 'echo "hacked" >> /etc/passwd 2>&1; echo "exit=$?"');
-  results.push({ command: 'Write to /etc/passwd (BLOCKED)', result: etcPasswd });
-
-  // 5. Write to /etc/shadow - BLOCKED (sensitive path denied by policy)
-  const etcShadow = await executeInSandbox(sandbox, 'echo "hacked" >> /etc/shadow 2>&1; echo "exit=$?"');
-  results.push({ command: 'Write to /etc/shadow (BLOCKED)', result: etcShadow });
-
-  // 6. Write to system binary dir - BLOCKED (system paths are read-only)
-  const usrBinWrite = await executeInSandbox(sandbox, 'touch /usr/bin/malware 2>&1; echo "exit=$?"');
-  results.push({ command: 'Create /usr/bin/malware (BLOCKED)', result: usrBinWrite });
-
-  // 7. Overwrite agentsh config - BLOCKED (not in writable paths)
-  const overwriteConfig = await executeInSandbox(sandbox, 'echo "hacked" > /etc/agentsh/config.yaml 2>&1; echo "exit=$?"');
-  results.push({ command: 'Overwrite agentsh config (BLOCKED)', result: overwriteConfig });
-
-  // 8. Delete workspace file - allowed (workspace has full access)
+  // Phase 2: Delete workspace file (depends on workspace write above)
   const deleteFile = await executeInSandbox(sandbox, 'rm /workspace/test.txt 2>&1 && echo "deleted" && ls /workspace/test.txt 2>&1; echo "exit=$?"');
-  results.push({ command: 'Delete workspace file', result: deleteFile });
 
-  // 9. Privilege escalation via file - BLOCKED (sensitive path denied by policy)
-  const sudoersWrite = await executeInSandbox(sandbox, 'echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers 2>&1; echo "exit=$?"');
-  results.push({ command: 'Write to /etc/sudoers (BLOCKED)', result: sudoersWrite });
+  const results: DemoResult[] = [
+    { command: 'agentsh detect (security capabilities)', result: detectResult },
+    { command: 'Write to /workspace/test.txt (ALLOWED)', result: workspaceWrite },
+    { command: 'Write to /tmp/test.txt (ALLOWED)', result: tmpWrite },
+    { command: 'Write to /etc/passwd (BLOCKED)', result: etcPasswd },
+    { command: 'Write to /etc/shadow (BLOCKED)', result: etcShadow },
+    { command: 'Create /usr/bin/malware (BLOCKED)', result: usrBinWrite },
+    { command: 'Overwrite agentsh config (BLOCKED)', result: overwriteConfig },
+    { command: 'Delete workspace file', result: deleteFile },
+    { command: 'Write to /etc/sudoers (BLOCKED)', result: sudoersWrite },
+  ];
 
   return Response.json({
     title: 'Filesystem Protection (Seccomp File Monitor + Landlock)',
@@ -1064,19 +1050,20 @@ async function handleDemoCommands(
     { cmd: 'shutdown -h now', desc: 'shutdown (halt system)', category: 'System Admin' },
     { cmd: 'mount /dev/sda1 /mnt', desc: 'mount (mount filesystem)', category: 'System Admin' },
     // Network tools (2)
-    { cmd: 'nc -l 4444', desc: 'nc (netcat listener)', category: 'Network Tools' },
+    { cmd: 'nc -l 4444', desc: 'nc (netcat)', category: 'Network Tools' },
     { cmd: 'nmap localhost', desc: 'nmap (port scanner)', category: 'Network Tools' },
     // Process control (2)
     { cmd: 'killall agentsh', desc: 'killall agentsh (kill security)', category: 'Process Control' },
     { cmd: 'pkill -f agentsh', desc: 'pkill agentsh (pattern kill)', category: 'Process Control' },
   ];
 
-  const results: DemoResult[] = [];
+  const commandResults = await runParallel(
+    commands.map(({ cmd }) => () => executeInSandbox(sandbox, cmd, 15000))
+  );
 
-  for (const { cmd, desc, category } of commands) {
-    const result = await executeInSandbox(sandbox, cmd, 15000);
-    results.push({ command: `[${category}] ${desc}`, result });
-  }
+  const results: DemoResult[] = commands.map(({ desc, category }, i) => ({
+    command: `[${category}] ${desc}`, result: commandResults[i]
+  }));
 
   return Response.json({
     title: 'Command Blocking',
@@ -1090,31 +1077,24 @@ async function handleDemoPrivilegeEscalation(
   sandbox: SandboxInstance,
   headers: Record<string, string>
 ): Promise<Response> {
-  const results: DemoResult[] = [];
+  // Run all command-level and file-level checks in parallel
+  const [sudoId, sudoCat, suRoot, pkexec, readShadow, writeSudoers] = await runParallel([
+    () => executeInSandbox(sandbox, 'sudo id', 15000),
+    () => executeInSandbox(sandbox, 'sudo cat /etc/shadow', 15000),
+    () => executeInSandbox(sandbox, 'su - root -c whoami', 15000),
+    () => executeInSandbox(sandbox, 'pkexec /bin/bash', 15000),
+    () => executeInSandbox(sandbox, 'cat /etc/shadow 2>&1', 15000),
+    () => executeInSandbox(sandbox, 'echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers 2>&1', 15000),
+  ]);
 
-  // Command-level privilege escalation
-  const commandBlocks = [
-    { cmd: 'sudo id', desc: 'sudo id (run as root)' },
-    { cmd: 'sudo cat /etc/shadow', desc: 'sudo cat /etc/shadow (read shadow file)' },
-    { cmd: 'su - root -c whoami', desc: 'su - root (switch to root)' },
-    { cmd: 'pkexec /bin/bash', desc: 'pkexec (PolicyKit escalation)' },
+  const results: DemoResult[] = [
+    { command: '[Command] sudo id (run as root)', result: sudoId },
+    { command: '[Command] sudo cat /etc/shadow (read shadow file)', result: sudoCat },
+    { command: '[Command] su - root (switch to root)', result: suRoot },
+    { command: '[Command] pkexec (PolicyKit escalation)', result: pkexec },
+    { command: '[File] Read /etc/shadow (password hashes)', result: readShadow },
+    { command: '[File] Write /etc/sudoers (grant sudo)', result: writeSudoers },
   ];
-
-  for (const { cmd, desc } of commandBlocks) {
-    const result = await executeInSandbox(sandbox, cmd, 15000);
-    results.push({ command: `[Command] ${desc}`, result });
-  }
-
-  // File-level privilege escalation
-  const fileBlocks = [
-    { cmd: 'cat /etc/shadow 2>&1', desc: 'Read /etc/shadow (password hashes)' },
-    { cmd: 'echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers 2>&1', desc: 'Write /etc/sudoers (grant sudo)' },
-  ];
-
-  for (const { cmd, desc } of fileBlocks) {
-    const result = await executeInSandbox(sandbox, cmd, 15000);
-    results.push({ command: `[File] ${desc}`, result });
-  }
 
   return Response.json({
     title: 'Privilege Escalation Prevention',
@@ -1139,12 +1119,13 @@ async function handleDemoStatus(
     { cmd: 'uname -r', desc: 'Kernel version' },
   ];
 
-  const results: DemoResult[] = [];
+  const statusResults = await runParallel(
+    statusChecks.map(({ cmd }) => () => executeRaw(sandbox, cmd))
+  );
 
-  for (const { cmd, desc } of statusChecks) {
-    const result = await executeRaw(sandbox, cmd);
-    results.push({ command: desc, result });
-  }
+  const results: DemoResult[] = statusChecks.map(({ desc }, i) => ({
+    command: desc, result: statusResults[i]
+  }));
 
   return Response.json({
     title: 'agentsh Status',
@@ -1164,6 +1145,23 @@ async function handleTerminal(
     instruction: 'See https://developers.cloudflare.com/sandbox/guides/expose-services/',
     port: 7681,
   }, { headers });
+}
+
+// Run multiple commands with limited concurrency to avoid overwhelming the
+// 0.25 vCPU Firecracker VM. Reduces handler time from N*T to ceil(N/C)*T.
+async function runParallel<T>(
+  tasks: Array<() => Promise<T>>,
+  concurrency: number = 3
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  for (let i = 0; i < tasks.length; i += concurrency) {
+    const batch = tasks.slice(i, i + concurrency);
+    const batchResults = await Promise.all(batch.map(fn => fn()));
+    for (let j = 0; j < batchResults.length; j++) {
+      results[i + j] = batchResults[j];
+    }
+  }
+  return results;
 }
 
 async function executeInSandbox(

@@ -42,8 +42,8 @@ describe("Command Blocking", () => {
 	});
 
 	// Network Tools
-	it("blocks nc (netcat listener)", () => {
-		const r = findResult(data.results, "nc (netcat listener)");
+	it("blocks nc (netcat)", () => {
+		const r = findResult(data.results, "nc (netcat)");
 		expect(r.result.success).toBe(false);
 	});
 
