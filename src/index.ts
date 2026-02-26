@@ -733,6 +733,10 @@ export default {
         return await handleDemoStatus(sandbox, headers);
       }
 
+      if (path === '/internal/start-agentsh') {
+        return await handleStartAgentsh(sandbox, headers);
+      }
+
       if (path === '/terminal') {
         return await handleTerminal(sandbox, headers);
       }
@@ -1082,7 +1086,7 @@ async function handleDemoPrivilegeEscalation(
     () => executeInSandbox(sandbox, 'sudo id', 15000),
     () => executeInSandbox(sandbox, 'sudo cat /etc/shadow', 15000),
     () => executeInSandbox(sandbox, 'su - root -c whoami', 15000),
-    () => executeInSandbox(sandbox, 'pkexec /bin/bash', 15000),
+    () => executeInSandbox(sandbox, 'pkexec cat /etc/shadow 2>&1', 15000),
     () => executeInSandbox(sandbox, 'cat /etc/shadow 2>&1', 15000),
     () => executeInSandbox(sandbox, 'echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers 2>&1', 15000),
   ]);
@@ -1132,6 +1136,44 @@ async function handleDemoStatus(
     description: 'Current status and configuration of the agentsh security agent running in this Cloudflare sandbox.',
     note: 'These commands run outside of agentsh enforcement (raw execution) to show the security infrastructure itself.',
     results
+  }, { headers });
+}
+
+async function handleStartAgentsh(
+  sandbox: SandboxInstance,
+  headers: Record<string, string>
+): Promise<Response> {
+  // Start the agentsh server in background via raw exec (no agentsh exec needed)
+  const startResult = await executeRaw(
+    sandbox,
+    'agentsh server --config /etc/agentsh/config.yaml &',
+    10000,
+  );
+
+  // Poll the agentsh health endpoint until ready (up to 120s)
+  const maxWait = 120;
+  let ready = false;
+  let elapsed = 0;
+  for (let i = 0; i < maxWait; i++) {
+    const health = await executeRaw(
+      sandbox,
+      'curl -sf http://127.0.0.1:18080/health 2>/dev/null && echo "OK" || echo "NOT_READY"',
+      5000,
+    );
+    if (health.stdout.includes('OK')) {
+      ready = true;
+      elapsed = i + 1;
+      break;
+    }
+    // Wait 1 second between checks
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  return Response.json({
+    started: true,
+    ready,
+    elapsedSeconds: elapsed,
+    startOutput: startResult.stdout,
   }, { headers });
 }
 

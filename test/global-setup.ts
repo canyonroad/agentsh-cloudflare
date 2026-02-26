@@ -50,7 +50,30 @@ async function warmupSandbox(): Promise<void> {
 		await new Promise((r) => setTimeout(r, HEALTH_POLL_INTERVAL));
 	}
 
-	// Step 2: Wait for agentsh exec path (agentsh server must be running)
+	// Step 2: Start agentsh server and wait for it to be healthy
+	console.log("[test] Starting agentsh server inside sandbox...");
+	while (Date.now() < deadline) {
+		try {
+			const res = await fetch(`${BASE_URL}/internal/start-agentsh`);
+			if (res.ok) {
+				const data = (await res.json()) as {
+					started: boolean;
+					ready: boolean;
+					elapsedSeconds: number;
+				};
+				if (data.ready) {
+					console.log(`[test] agentsh server is healthy (took ${data.elapsedSeconds}s)`);
+					break;
+				}
+				console.log("[test] agentsh server started but not yet healthy, retrying...");
+			}
+		} catch {
+			// Not ready yet
+		}
+		await new Promise((r) => setTimeout(r, HEALTH_POLL_INTERVAL));
+	}
+
+	// Step 3: Wait for agentsh exec path (agentsh server must be running)
 	console.log("[test] Warming agentsh exec path...");
 	while (Date.now() < deadline) {
 		try {

@@ -6,7 +6,7 @@ describe("agentsh Status", () => {
 
 	beforeAll(async () => {
 		data = await fetchDemo("/demo/status");
-	}, 300_000);
+	}, 600_000);
 
 	it("reports agentsh version", () => {
 		const r = findResult(data.results, "agentsh version");

@@ -52,8 +52,8 @@ sandbox:
   seccomp:
     enabled: true  # seccomp-bpf works in Firecracker
     file_monitor:
-      enabled: true               # Intercept file syscalls via seccomp_unotify
-      enforce_without_fuse: true   # Enforce file policy even without FUSE
+      enabled: false              # Disabled: causes EOF crash when bash runs under seccomp_unotify
+      enforce_without_fuse: false  # Landlock (abi=5) provides kernel-level file enforcement instead
 
 # Landlock LSM - Kernel-enforced filesystem access control
 # Restricts file access even for root processes (Linux 5.13+)

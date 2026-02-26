@@ -11,7 +11,7 @@ describe("Privilege Escalation Prevention", () => {
 		const shadowResult = findResult(data.results, "Read /etc/shadow");
 		const output = shadowResult.result.stdout + shadowResult.result.stderr;
 		filesystemEnforced = /permission denied|BLOCKED|denied|EACCES|Bad file descriptor/i.test(output);
-	}, 300_000);
+	}, 600_000);
 
 	// Command-level blocks
 	it("blocks sudo id (run as root)", () => {

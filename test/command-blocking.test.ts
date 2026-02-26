@@ -6,7 +6,7 @@ describe("Command Blocking", () => {
 
 	beforeAll(async () => {
 		data = await fetchDemo("/demo/commands");
-	}, 300_000);
+	}, 600_000);
 
 	// Privilege Escalation
 	it("blocks sudo id", () => {
