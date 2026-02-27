@@ -1,6 +1,6 @@
 # agentsh + Cloudflare Containers
 
-Runtime security governance for AI agents using [agentsh](https://github.com/canyonroad/agentsh) v0.10.4 with [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
+Runtime security governance for AI agents using [agentsh](https://github.com/canyonroad/agentsh) v0.12.0 with [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
 
 ## Why agentsh + Cloudflare Containers?
 
@@ -111,7 +111,7 @@ The agentsh server is pre-warmed via an `/internal/start-agentsh` endpoint durin
 | ebpf | Working | Network interception |
 | capabilities_drop | Working | Available |
 | FUSE | Not available | Firecracker seccomp blocks `mount()` syscall |
-| seccomp file_monitor | Disabled | agentsh bug: notify handler panic causes EOF with bash |
+| seccomp file_monitor | Working | Fixed in v0.12.0; intercepts file syscalls via `seccomp_unotify` |
 | pid_namespace | Not available | Not available in Firecracker config |
 
 ## For Cloudflare Engineers: What to Enable
@@ -130,16 +130,6 @@ This section describes what Cloudflare can enable on their infrastructure to unl
 
 **How to enable**: Allow the `mount()` syscall in the Firecracker seccomp profile, or expose `/dev/fuse` (character device 10,229) with appropriate permissions. This is a standard Firecracker configuration -- other Firecracker-based platforms (E2B, etc.) expose it by default.
 
-### seccomp file_monitor -- Known agentsh Bug
-
-**Current state**: agentsh's seccomp file_monitor uses `seccomp_unotify` to intercept file syscalls (`openat`, `unlinkat`, `mkdirat`, etc.) and enforce file access policy. When `/bin/bash` runs under this interception, the HTTP exec handler returns EOF. The server process stays alive (health check passes), but the notify handler goroutine dies silently.
-
-**Root cause**: The seccomp notify handler goroutine in `internal/api/notify_linux.go:124` has no `defer recover()`. When bash generates a burst of file syscall notifications during startup (reading `/etc/bash.bashrc`, `/etc/profile`, shared libraries), a panic in `handleFileNotification` kills the goroutine. Tracee processes block forever waiting for seccomp responses, causing the exec to hang and return EOF. Tested on both `basic` (0.25 vCPU) and `standard-2` (1 vCPU) -- same behavior, confirming this is **not a resource issue**.
-
-**Current workaround**: `seccomp.file_monitor.enabled: false`. Landlock (ABI v5) provides kernel-level filesystem protection.
-
-**Fix needed in agentsh**: Add panic recovery to the notify handler goroutine, log panics with stack traces, and send EACCES responses to unblock tracee processes after recovery.
-
 ### PID Namespace -- Low Impact
 
 **Current state**: PID namespace creation is not available.
@@ -154,10 +144,9 @@ This section describes what Cloudflare can enable on their infrastructure to unl
 | Feature | Impact | Current | What's Needed |
 |---------|--------|---------|---------------|
 | FUSE | **High** -- enables file interception, soft-delete, symlink protection | Blocked (`mount()` denied) | Allow `mount()` in Firecracker seccomp |
-| seccomp file_monitor | Medium -- dual-layer filesystem protection | agentsh bug (notify panic) | Fix in agentsh: add panic recovery |
 | PID namespace | Low -- process isolation | Not available | Allow `CLONE_NEWPID` |
 
-With FUSE enabled, protection would increase from ~80% to ~95%.
+With FUSE enabled, protection would increase from ~90% to ~98%.
 
 ## Configuration
 
@@ -173,7 +162,7 @@ See the [agentsh documentation](https://www.agentsh.org/docs/) for the full poli
 ```
 agentsh-cloudflare/
 ├── src/index.ts             # Cloudflare Worker (API routes, agentsh exec wrapping)
-├── Dockerfile               # Container image with agentsh v0.10.4
+├── Dockerfile               # Container image with agentsh v0.12.0
 ├── config/agentsh.yaml      # Server config (Landlock, seccomp, DLP, network)
 ├── policies/default.yaml    # Security policy (commands, network, files)
 ├── systemd/agentsh.service  # Systemd service for agentsh server
@@ -259,7 +248,7 @@ Update the `CACHE_BUST` ARG in `Dockerfile` when config files change, since Dock
 | Python | 3.11 |
 | Node.js | 20 |
 | Bun | Available |
-| agentsh | v0.10.4 (`.deb` package) |
+| agentsh | v0.12.0 (`.deb` package) |
 | Workspace | `/workspace` |
 
 ## Related Projects
