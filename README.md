@@ -111,7 +111,7 @@ The agentsh server is pre-warmed via an `/internal/start-agentsh` endpoint durin
 | ebpf | Working | Network interception |
 | capabilities_drop | Working | Available |
 | FUSE | Not available | Firecracker seccomp blocks `mount()` syscall |
-| seccomp file_monitor | Disabled | Causes EOF crash when bash runs under `seccomp_unotify` |
+| seccomp file_monitor | Disabled | agentsh bug: notify handler panic causes EOF with bash |
 | pid_namespace | Not available | Not available in Firecracker config |
 
 ## For Cloudflare Engineers: What to Enable
@@ -130,17 +130,15 @@ This section describes what Cloudflare can enable on their infrastructure to unl
 
 **How to enable**: Allow the `mount()` syscall in the Firecracker seccomp profile, or expose `/dev/fuse` (character device 10,229) with appropriate permissions. This is a standard Firecracker configuration -- other Firecracker-based platforms (E2B, etc.) expose it by default.
 
-### seccomp_unotify Stability with Bash -- High Impact
+### seccomp file_monitor -- Known agentsh Bug
 
-**Current state**: agentsh's seccomp file_monitor uses `seccomp_unotify` to intercept file syscalls (`openat`, `unlinkat`, `mkdirat`, etc.) and enforce file access policy. When `/bin/bash` runs under this interception, the agentsh server crashes with an EOF error. This is likely caused by bash's rapid burst of file operations during startup (reading `/etc/bash.bashrc`, `/etc/profile`, etc.) overwhelming the unotify handler on the 0.25 vCPU VM.
+**Current state**: agentsh's seccomp file_monitor uses `seccomp_unotify` to intercept file syscalls (`openat`, `unlinkat`, `mkdirat`, etc.) and enforce file access policy. When `/bin/bash` runs under this interception, the HTTP exec handler returns EOF. The server process stays alive (health check passes), but the notify handler goroutine dies silently.
 
-**Current workaround**: `seccomp.file_monitor.enabled: false`. Landlock (ABI v5 locally) still provides kernel-level filesystem protection, but the defense-in-depth layer from seccomp file monitoring is lost.
+**Root cause**: The seccomp notify handler goroutine in `internal/api/notify_linux.go:124` has no `defer recover()`. When bash generates a burst of file syscall notifications during startup (reading `/etc/bash.bashrc`, `/etc/profile`, shared libraries), a panic in `handleFileNotification` kills the goroutine. Tracee processes block forever waiting for seccomp responses, causing the exec to hang and return EOF. Tested on both `basic` (0.25 vCPU) and `standard-2` (1 vCPU) -- same behavior, confirming this is **not a resource issue**.
 
-**What it would unlock**:
-- **Dual-layer filesystem protection** -- seccomp file_monitor + Landlock together provide redundant enforcement. If either is bypassed, the other still blocks unauthorized file access.
-- **Path-based policy enforcement** -- The file_monitor reads target paths from process memory and evaluates them against `file_rules` policy, providing more granular control than Landlock's directory-level rules.
+**Current workaround**: `seccomp.file_monitor.enabled: false`. Landlock (ABI v5) provides kernel-level filesystem protection.
 
-**Possible causes**: The 0.25 vCPU allocation may be insufficient for the seccomp_unotify handler to keep up with bash's startup file operations. Higher vCPU or a fix to the Firecracker seccomp_unotify scheduling could resolve this.
+**Fix needed in agentsh**: Add panic recovery to the notify handler goroutine, log panics with stack traces, and send EACCES responses to unblock tracee processes after recovery.
 
 ### PID Namespace -- Low Impact
 
@@ -156,10 +154,10 @@ This section describes what Cloudflare can enable on their infrastructure to unl
 | Feature | Impact | Current | What's Needed |
 |---------|--------|---------|---------------|
 | FUSE | **High** -- enables file interception, soft-delete, symlink protection | Blocked (`mount()` denied) | Allow `mount()` in Firecracker seccomp |
-| seccomp file_monitor | **High** -- dual-layer filesystem protection | Crashes with bash (EOF) | Higher vCPU or unotify scheduling fix |
+| seccomp file_monitor | Medium -- dual-layer filesystem protection | agentsh bug (notify panic) | Fix in agentsh: add panic recovery |
 | PID namespace | Low -- process isolation | Not available | Allow `CLONE_NEWPID` |
 
-With FUSE enabled, protection would increase from ~80% to ~95%. With all features, it would reach ~100%.
+With FUSE enabled, protection would increase from ~80% to ~95%.
 
 ## Configuration
 

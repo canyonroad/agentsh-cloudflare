@@ -52,7 +52,7 @@ sandbox:
   seccomp:
     enabled: true  # seccomp-bpf works in Firecracker
     file_monitor:
-      enabled: false              # Disabled: causes EOF crash when bash runs under seccomp_unotify
+      enabled: false              # Disabled: notify handler panic causes EOF (agentsh bug, not VM size)
       enforce_without_fuse: false  # Landlock (abi=5) provides kernel-level file enforcement instead
 
 # Landlock LSM - Kernel-enforced filesystem access control
