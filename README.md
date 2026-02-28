@@ -111,7 +111,7 @@ The agentsh server is pre-warmed via an `/internal/start-agentsh` endpoint durin
 | ebpf | Working | Network interception |
 | capabilities_drop | Working | Available |
 | FUSE | Not available | Firecracker seccomp blocks `mount()` syscall |
-| seccomp file_monitor | Working | Fixed in v0.12.0; intercepts file syscalls via `seccomp_unotify` |
+| seccomp file_monitor | Disabled | Exec hangs on Firecracker; Landlock provides filesystem protection |
 | pid_namespace | Not available | Not available in Firecracker config |
 
 ## For Cloudflare Engineers: What to Enable
@@ -130,6 +130,12 @@ This section describes what Cloudflare can enable on their infrastructure to unl
 
 **How to enable**: Allow the `mount()` syscall in the Firecracker seccomp profile, or expose `/dev/fuse` (character device 10,229) with appropriate permissions. This is a standard Firecracker configuration -- other Firecracker-based platforms (E2B, etc.) expose it by default.
 
+### seccomp file_monitor -- Known Issue
+
+**Current state**: agentsh's seccomp file_monitor uses `seccomp_unotify` to intercept file syscalls (`openat`, `unlinkat`, `mkdirat`, etc.) and enforce file access policy. On Firecracker VMs, `agentsh exec` hangs for 2 minutes then times out when file_monitor is enabled. Tested with v0.10.4 and v0.12.0 on both `basic` (0.25 vCPU) and `standard-2` (1 vCPU) -- same behavior, confirming this is **not a resource issue**.
+
+**Current workaround**: `seccomp.file_monitor.enabled: false`. Landlock (ABI v5) provides kernel-level filesystem protection.
+
 ### PID Namespace -- Low Impact
 
 **Current state**: PID namespace creation is not available.
@@ -144,9 +150,10 @@ This section describes what Cloudflare can enable on their infrastructure to unl
 | Feature | Impact | Current | What's Needed |
 |---------|--------|---------|---------------|
 | FUSE | **High** -- enables file interception, soft-delete, symlink protection | Blocked (`mount()` denied) | Allow `mount()` in Firecracker seccomp |
+| seccomp file_monitor | Medium -- dual-layer filesystem protection | Hangs on Firecracker | Debug seccomp_unotify on Firecracker |
 | PID namespace | Low -- process isolation | Not available | Allow `CLONE_NEWPID` |
 
-With FUSE enabled, protection would increase from ~90% to ~98%.
+With FUSE enabled, protection would increase from ~80% to ~95%.
 
 ## Configuration
 
