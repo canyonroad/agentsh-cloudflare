@@ -39,7 +39,7 @@ sandbox:
     max_processes: 100
 
   fuse:
-    enabled: false  # Firecracker seccomp blocks mount; deferred also hangs on server init
+    enabled: false  # Requires CAP_SYS_ADMIN + mount() — blocked by Firecracker & Docker seccomp
 
   network:
     enabled: true
@@ -52,8 +52,8 @@ sandbox:
   seccomp:
     enabled: true  # seccomp-bpf works in Firecracker
     file_monitor:
-      enabled: false              # Still broken in v0.12.0: exec hangs with 2min timeout on Firecracker
-      enforce_without_fuse: false  # Landlock (abi=5) provides kernel-level file enforcement instead
+      enabled: true               # v0.14.0: seccomp ACK handshake prevents Firecracker hang
+      enforce_without_fuse: false  # Monitor-only; Landlock (abi=5) handles enforcement
 
 # Landlock LSM - Kernel-enforced filesystem access control
 # Restricts file access even for root processes (Linux 5.13+)

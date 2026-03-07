@@ -1,6 +1,6 @@
 # agentsh + Cloudflare Containers
 
-Runtime security governance for AI agents using [agentsh](https://github.com/canyonroad/agentsh) v0.12.0 with [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
+Runtime security governance for AI agents using [agentsh](https://github.com/canyonroad/agentsh) v0.14.0 with [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
 
 ## Why agentsh + Cloudflare Containers?
 
@@ -14,6 +14,25 @@ Cloudflare Containers give AI agents a secure, isolated Firecracker VM environme
 - **Running dangerous commands** (sudo, ssh, kill, nc)
 - **Reaching internal networks** (10.x, 172.16.x, 192.168.x)
 - **Deleting workspace files** permanently
+
+## Architecture
+
+The Cloudflare Worker runs in a **V8 isolate** — it handles HTTP requests, renders the UI, and manages the sandbox lifecycle. When commands need to execute, the Worker calls `sandbox.exec()` which runs inside a **Firecracker microVM** with a full Linux kernel.
+
+```
++---------------------------+         +---------------------------------------------+
+|  Cloudflare Worker        |         |  Firecracker VM (Container)                 |
+|  (V8 isolate)             |         |                                             |
+|                           |  exec   |  +---------------------------------------+  |
+|  - HTTP routing           | ------> |  |  agentsh (Governance)                 |  |
+|  - HTML/JSON responses    |         |  |  - seccomp (command interception)     |  |
+|  - getSandbox() API       |         |  |  - Landlock (filesystem enforcement)  |  |
+|  - Rate limiting          |         |  |  - Network proxy (domain filtering)   |  |
+|  - Turnstile verification |         |  |  - DLP (secret redaction)             |  |
+|                           |         |  |  - Audit logging                      |  |
++---------------------------+         |  +---------------------------------------+  |
+                                      +---------------------------------------------+
+```
 
 agentsh adds the governance layer that controls what agents can do inside the sandbox, providing defense-in-depth:
 
@@ -105,14 +124,15 @@ The agentsh server is pre-warmed via an `/internal/start-agentsh` endpoint durin
 | Capability | Status | Notes |
 |------------|--------|-------|
 | seccomp | Working | Full seccomp including `seccomp_user_notify` |
-| seccomp_user_notify | Working | Key feature for syscall interception (kernel 5.0+) |
-| Landlock | Working (local) | ABI v5 locally via host kernel; production kernel TBD |
-| cgroups_v2 | Working | Full controllers |
-| ebpf | Working | Network interception |
-| capabilities_drop | Working | Available |
+| seccomp_user_notify | Working | Syscall interception for command and file monitoring (kernel 5.0+) |
+| seccomp file_monitor | Working | Monitor-only mode; Landlock handles enforcement |
+| Landlock | Working | ABI v5 — kernel-enforced filesystem access control (Linux 5.13+) |
+| Network proxy | Working | Domain/IP/port filtering via agentsh proxy |
+| DLP | Working | Secret detection and redaction in LLM traffic |
+| Audit logging | Working | All operations logged |
 | FUSE | Not available | Firecracker seccomp blocks `mount()` syscall |
-| seccomp file_monitor | Disabled | Firecracker `seccomp_unotify` interaction causes exec hang; Landlock provides filesystem protection |
-| pid_namespace | Not available | Not available in Firecracker config |
+| cgroups | Not available | Read-only in Firecracker containers |
+| PID namespace | Not available | Not available in Firecracker config |
 
 ## For Cloudflare Engineers: What to Enable
 
@@ -130,21 +150,6 @@ This section describes what Cloudflare can enable on their infrastructure to unl
 
 **How to enable**: Allow the `mount()` syscall in the Firecracker seccomp profile, or expose `/dev/fuse` (character device 10,229) with appropriate permissions. This is a standard Firecracker configuration -- other Firecracker-based platforms (E2B, etc.) expose it by default.
 
-### seccomp file_monitor -- Firecracker-specific Issue
-
-**Current state**: agentsh's seccomp file_monitor uses `seccomp_unotify` to intercept file syscalls (`openat`, `unlinkat`, `mkdirat`, etc.) and enforce file access policy. On Firecracker VMs, `agentsh exec` hangs for 2 minutes then times out when file_monitor is enabled.
-
-**Investigation**: Originally suspected to be an agentsh bug (missing `defer recover()` in the notify handler goroutine at `internal/api/notify_linux.go:124`). agentsh v0.12.0 added panic recovery to the notify handler, but the issue persists on Firecracker. Tested across:
-- agentsh v0.10.4 and v0.12.0
-- `basic` (0.25 vCPU) and `standard-2` (1 vCPU) instance types
-- Same 2-minute hang behavior in all configurations
-
-This confirms the issue is a **Firecracker-specific `seccomp_unotify` interaction**, not the original agentsh panic bug. The file_monitor works correctly on other platforms (E2B, Daytona, bare metal).
-
-**Current workaround**: `seccomp.file_monitor.enabled: false`. Landlock (ABI v5) provides kernel-level filesystem protection.
-
-**Possible cause**: Firecracker's own seccomp filter may interfere with the guest's `seccomp_unotify` notifications, causing the notification fd to block indefinitely. This would explain why the exec hangs rather than panicking.
-
 ### PID Namespace -- Low Impact
 
 **Current state**: PID namespace creation is not available.
@@ -159,7 +164,6 @@ This confirms the issue is a **Firecracker-specific `seccomp_unotify` interactio
 | Feature | Impact | Current | What's Needed |
 |---------|--------|---------|---------------|
 | FUSE | **High** -- enables file interception, soft-delete, symlink protection | Blocked (`mount()` denied) | Allow `mount()` in Firecracker seccomp |
-| seccomp file_monitor | Medium -- dual-layer filesystem protection | Hangs on Firecracker | Investigate Firecracker seccomp filter interference with guest `seccomp_unotify` |
 | PID namespace | Low -- process isolation | Not available | Allow `CLONE_NEWPID` |
 
 With FUSE enabled, protection would increase from ~80% to ~95%.
@@ -178,7 +182,7 @@ See the [agentsh documentation](https://www.agentsh.org/docs/) for the full poli
 ```
 agentsh-cloudflare/
 ├── src/index.ts             # Cloudflare Worker (API routes, agentsh exec wrapping)
-├── Dockerfile               # Container image with agentsh v0.12.0
+├── Dockerfile               # Container image with agentsh v0.14.0
 ├── config/agentsh.yaml      # Server config (Landlock, seccomp, DLP, network)
 ├── policies/default.yaml    # Security policy (commands, network, files)
 ├── systemd/agentsh.service  # Systemd service for agentsh server
@@ -264,7 +268,7 @@ Update the `CACHE_BUST` ARG in `Dockerfile` when config files change, since Dock
 | Python | 3.11 |
 | Node.js | 20 |
 | Bun | Available |
-| agentsh | v0.12.0 (`.deb` package) |
+| agentsh | v0.14.0 (`.deb` package) |
 | Workspace | `/workspace` |
 
 ## Related Projects

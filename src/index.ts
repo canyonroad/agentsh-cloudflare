@@ -1032,9 +1032,9 @@ async function handleDemoFilesystem(
   ];
 
   return Response.json({
-    title: 'Filesystem Protection (Seccomp File Monitor + Landlock)',
-    description: 'agentsh uses seccomp_unotify to intercept file syscalls (openat, unlinkat, mkdirat, etc.) and enforce file access policy. In Firecracker where FUSE and Landlock are unavailable, seccomp file monitoring provides kernel-level filesystem protection. Write access is limited to /workspace, /tmp, and /home/sandbox.',
-    note: 'Seccomp file monitoring intercepts filesystem syscalls via seccomp_unotify, reads paths from process memory, and enforces file_rules policy. Landlock provides additional defense-in-depth where the kernel supports it (Linux 5.13+).',
+    title: 'Filesystem Protection (Landlock + Seccomp File Monitor)',
+    description: 'agentsh uses Landlock (ABI v5) for kernel-enforced filesystem access control, restricting file access even for root processes. The seccomp file_monitor provides additional monitoring by intercepting file syscalls (openat, unlinkat, mkdirat, etc.) via seccomp_unotify. Write access is limited to /workspace, /tmp, and /home/sandbox.',
+    note: 'Landlock provides kernel-level filesystem enforcement (Linux 5.13+). The seccomp file_monitor runs in audit-only mode, logging file operations while Landlock handles enforcement. FUSE is unavailable on Firecracker VMs (mount() syscall blocked).',
     results
   }, { headers });
 }

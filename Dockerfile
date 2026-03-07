@@ -5,7 +5,7 @@
 FROM docker.io/cloudflare/sandbox:0.7.2-python
 
 # Cache buster to force rebuild
-ARG CACHE_BUST=20260227-agentsh-0.12.0
+ARG CACHE_BUST=20260306-agentsh-0.14.0
 RUN echo "Cache bust: ${CACHE_BUST}"
 
 ARG AGENTSH_REPO=canyonroad/agentsh
@@ -18,7 +18,7 @@ USER root
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Increase agentsh exec HTTP client timeout for Firecracker where seccomp
-# file monitoring adds per-syscall overhead to Node.js/Python startup
+# file monitoring (seccomp_unotify) adds per-syscall overhead
 ENV AGENTSH_CLIENT_TIMEOUT=5m
 
 # Install additional dependencies needed for agentsh
@@ -30,7 +30,7 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install agentsh release
-ARG AGENTSH_VERSION=0.12.0
+ARG AGENTSH_VERSION=0.14.0
 RUN set -eux; \
     deb="agentsh_${AGENTSH_VERSION}_linux_${DEB_ARCH}.deb"; \
     url="https://github.com/${AGENTSH_REPO}/releases/download/v${AGENTSH_VERSION}/${deb}"; \

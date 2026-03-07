@@ -26,7 +26,9 @@ file_rules:
   - name: allow-tmp
     description: Full access to temp directories
     paths:
+      - "/tmp"
       - "/tmp/**"
+      - "/var/tmp"
       - "/var/tmp/**"
     operations:
       - "*"
@@ -58,9 +60,9 @@ file_rules:
     decision: deny
     message: "BLOCKED: Access to privilege escalation tool: {{.Path}}"
 
-  # System paths - read-only
+  # System paths - read + execute
   - name: allow-system-read
-    description: Read access to system paths
+    description: Read and execute access to system paths
     paths:
       - "/usr/**"
       - "/lib/**"
