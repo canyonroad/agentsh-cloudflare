@@ -12,12 +12,13 @@ describe("Filesystem Protection", () => {
 
 	beforeAll(async () => {
 		data = await fetchDemo("/demo/filesystem");
-		// Check if filesystem enforcement is working (via seccomp file monitor,
-		// Landlock, or FUSE). Seccomp returns "Bad file descriptor" (EBADF),
+		// Check if filesystem enforcement is working (via ptrace, seccomp file monitor,
+		// Landlock, or FUSE). ptrace returns "command failed" or "Permission denied",
+		// Seccomp returns "Bad file descriptor" (EBADF),
 		// Landlock returns "Permission denied", FUSE returns "BLOCKED".
 		const etcPasswdResult = findResult(data.results, "/etc/passwd");
 		const output = etcPasswdResult.result.stdout + etcPasswdResult.result.stderr;
-		filesystemEnforced = /permission denied|BLOCKED|denied|EACCES|Bad file descriptor/i.test(output);
+		filesystemEnforced = /permission denied|BLOCKED|denied|EACCES|Bad file descriptor|command failed/i.test(output);
 	}, 600_000);
 
 	it("reports security status", () => {
@@ -41,7 +42,7 @@ describe("Filesystem Protection", () => {
 		if (!filesystemEnforced) return; // skip without seccomp file monitor or Landlock
 		const r = findResult(data.results, "/etc/passwd");
 		expect(r.result.stdout + r.result.stderr).toMatch(
-			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor/i,
+			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor|command failed/i,
 		);
 	});
 
@@ -49,15 +50,16 @@ describe("Filesystem Protection", () => {
 		if (!filesystemEnforced) return;
 		const r = findResult(data.results, "/etc/shadow");
 		expect(r.result.stdout + r.result.stderr).toMatch(
-			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor/i,
+			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor|command failed/i,
 		);
 	});
 
 	it("blocks creating files in /usr/bin", () => {
 		if (!filesystemEnforced) return;
 		const r = findResult(data.results, "/usr/bin/malware");
-		expect(r.result.stdout + r.result.stderr).toMatch(
-			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor/i,
+		const output = r.result.stdout + r.result.stderr;
+		expect(output).toMatch(
+			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor|command failed/i,
 		);
 	});
 
@@ -65,7 +67,7 @@ describe("Filesystem Protection", () => {
 		if (!filesystemEnforced) return;
 		const r = findResult(data.results, "agentsh config");
 		expect(r.result.stdout + r.result.stderr).toMatch(
-			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor/i,
+			/permission denied|read-only|BLOCKED|denied|EACCES|Bad file descriptor|command failed/i,
 		);
 	});
 
@@ -73,7 +75,7 @@ describe("Filesystem Protection", () => {
 		if (!filesystemEnforced) return;
 		const r = findResult(data.results, "/etc/sudoers");
 		expect(r.result.stdout + r.result.stderr).toMatch(
-			/permission denied|BLOCKED|denied|EACCES|Bad file descriptor/i,
+			/permission denied|BLOCKED|denied|EACCES|Bad file descriptor|command failed/i,
 		);
 	});
 });

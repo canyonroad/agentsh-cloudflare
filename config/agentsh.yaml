@@ -1,5 +1,5 @@
 # agentsh Server Configuration for Cloudflare Sandbox
-# Optimized for container environment
+# ptrace + seccomp enforcement — no FUSE, no Landlock
 
 server:
   http:
@@ -12,7 +12,7 @@ server:
     addr: "127.0.0.1:9090"
 
 auth:
-  type: "none"  # Internal container communication only
+  type: "none"
 
 logging:
   level: "info"
@@ -27,11 +27,13 @@ sessions:
   cleanup_interval: "5m"
 
 audit:
-  enabled: false
+  enabled: true
+  storage:
+    sqlite_path: "/var/lib/agentsh/events.db"
 
 sandbox:
   enabled: true
-  allow_degraded: true  # Allow running without all kernel features
+  allow_degraded: true
 
   limits:
     max_memory_mb: 2048
@@ -39,7 +41,7 @@ sandbox:
     max_processes: 100
 
   fuse:
-    enabled: false  # Requires CAP_SYS_ADMIN + mount() — blocked by Firecracker & Docker seccomp
+    enabled: false
 
   network:
     enabled: true
@@ -47,51 +49,37 @@ sandbox:
     proxy_listen_addr: "127.0.0.1:0"
 
   cgroups:
-    enabled: false  # Typically read-only in containers
+    enabled: false
+
+  unix_sockets:
+    enabled: false      # mutually exclusive with ptrace
 
   seccomp:
-    enabled: true  # seccomp-bpf works in Firecracker
+    enabled: true
+    mode: "enforce"
+    execve:
+      enabled: false    # mutually exclusive with ptrace
     file_monitor:
-      enabled: true               # v0.14.0: seccomp ACK handshake prevents Firecracker hang
-      enforce_without_fuse: false  # Monitor-only; Landlock (abi=5) handles enforcement
+      enabled: true
+      enforce_without_fuse: false  # monitor-only (no FUSE on Firecracker)
 
-# Landlock LSM - Kernel-enforced filesystem access control
-# Restricts file access even for root processes (Linux 5.13+)
+  ptrace:
+    enabled: true
+    attach_mode: "children"
+    on_attach_failure: "fail_open"
+    mask_tracer_pid: "off"
+    trace:
+      execve: true
+      file: true
+      network: true
+      signal: true
+    performance:
+      seccomp_prefilter: true
+      max_tracees: 100
+      max_hold_ms: 5000
+
 landlock:
-  enabled: true
-  allow_execute:
-    - "/usr/bin"
-    - "/usr/sbin"
-    - "/usr/lib"
-    - "/usr/local"
-    - "/bin"
-    - "/sbin"
-    - "/lib"
-    - "/lib64"
-  allow_read:
-    - "/usr"
-    - "/lib"
-    - "/lib64"
-    - "/bin"
-    - "/sbin"
-    - "/etc"
-    - "/proc"
-    - "/sys"
-    - "/dev"
-    - "/run"
-    - "/var/lib/agentsh"
-  allow_write:
-    - "/tmp"
-    - "/var/tmp"
-    - "/dev"
-    - "/home/sandbox"
-    - "/var/lib/agentsh"
-  deny_paths:
-    - "/etc/shadow"
-    - "/etc/sudoers"
-    - "/etc/sudoers.d"
-    - "/var/run/docker.sock"
-    - "/run/docker.sock"
+  enabled: false
 
 proxy:
   mode: "embedded"
@@ -100,8 +88,6 @@ proxy:
     anthropic: "https://api.anthropic.com"
     openai: "https://api.openai.com"
 
-# DLP - Data Loss Prevention
-# Redacts sensitive data before it reaches LLMs
 dlp:
   mode: "redact"
   patterns:
@@ -144,7 +130,7 @@ policies:
   default_policy: "default"
 
 approvals:
-  enabled: false  # No approval workflow for demo
+  enabled: false
   mode: "async"
   timeout: "5m"
 
@@ -158,4 +144,4 @@ health:
 
 development:
   disable_auth: true
-  verbose_errors: true  # Show detailed errors for demo
+  verbose_errors: true

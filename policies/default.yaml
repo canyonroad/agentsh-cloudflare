@@ -60,6 +60,25 @@ file_rules:
     decision: deny
     message: "BLOCKED: Access to privilege escalation tool: {{.Path}}"
 
+  # System paths - deny writes first (before allowing reads)
+  - name: deny-system-write
+    description: Deny write access to system paths
+    paths:
+      - "/usr/**"
+      - "/lib/**"
+      - "/lib64/**"
+      - "/bin/**"
+      - "/sbin/**"
+      - "/etc/**"
+    operations:
+      - write
+      - create
+      - delete
+      - rename
+      - chmod
+    decision: deny
+    message: "BLOCKED: Write to system path: {{.Path}}"
+
   # System paths - read + execute
   - name: allow-system-read
     description: Read and execute access to system paths
@@ -83,7 +102,7 @@ file_rules:
     paths:
       - "/etc/hosts"
       - "/etc/resolv.conf"
-      - "/etc/ssl/certs/**"
+      - "/etc/ssl/**"
       - "/etc/ca-certificates/**"
       - "/etc/localtime"
       - "/etc/passwd"
@@ -93,15 +112,25 @@ file_rules:
       - "/etc/ld.so.conf"
       - "/etc/ld.so.conf.d/**"
       - "/etc/gai.conf"
+      - "/etc/bash.bashrc"
+      - "/etc/profile"
+      - "/etc/profile.d/**"
+      - "/etc/environment"
+      - "/etc/alternatives/**"
+      - "/etc/pip.conf"
+      - "/etc/python3/**"
+      - "/etc/gitconfig"
+      - "/etc/mime.types"
     operations:
       - read
       - open
       - stat
+      - readlink
     decision: allow
 
-  # Device files - read access (needed for /dev/urandom, /dev/null, etc.)
-  - name: allow-dev-read
-    description: Read access to device files
+  # Device files - full access (needed for /dev/urandom, /dev/null, etc.)
+  - name: allow-dev
+    description: Full access to device files
     paths:
       - "/dev/urandom"
       - "/dev/random"
@@ -114,11 +143,9 @@ file_rules:
       - "/dev/stderr"
       - "/dev/fd/**"
       - "/dev/pts/**"
+      - "/dev/shm/**"
     operations:
-      - read
-      - open
-      - write
-      - stat
+      - "*"
     decision: allow
 
   # Proc/sys - read access (needed for runtime introspection)

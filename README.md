@@ -1,6 +1,6 @@
 # agentsh + Cloudflare Containers
 
-Runtime security governance for AI agents using [agentsh](https://github.com/canyonroad/agentsh) v0.14.0 with [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
+Runtime security governance for AI agents using [agentsh](https://github.com/canyonroad/agentsh) v0.16.4 with [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
 
 ## Why agentsh + Cloudflare Containers?
 
@@ -25,8 +25,8 @@ The Cloudflare Worker runs in a **V8 isolate** — it handles HTTP requests, ren
 |  (V8 isolate)             |         |                                             |
 |                           |  exec   |  +---------------------------------------+  |
 |  - HTTP routing           | ------> |  |  agentsh (Governance)                 |  |
-|  - HTML/JSON responses    |         |  |  - seccomp (command interception)     |  |
-|  - getSandbox() API       |         |  |  - Landlock (filesystem enforcement)  |  |
+|  - HTML/JSON responses    |         |  |  - ptrace (syscall-level enforcement) |  |
+|  - getSandbox() API       |         |  |  - seccomp (file monitoring)          |  |
 |  - Rate limiting          |         |  |  - Network proxy (domain filtering)   |  |
 |  - Turnstile verification |         |  |  - DLP (secret redaction)             |  |
 |                           |         |  |  - Audit logging                      |  |
@@ -57,13 +57,13 @@ agentsh adds the governance layer that controls what agents can do inside the sa
 
 | Cloudflare Provides | agentsh Adds |
 |---------------------|--------------|
-| Compute isolation (Firecracker) | Command blocking (seccomp) |
-| Process sandboxing | File I/O policy (Landlock + permissions) |
+| Compute isolation (Firecracker) | Command blocking (ptrace execve interception) |
+| Process sandboxing | File I/O policy (ptrace file syscall enforcement) |
 | API access to sandbox | Domain allowlist/blocklist |
 | Persistent environment | Cloud metadata blocking |
-| | Environment variable filtering |
+| | Network syscall interception (connect/bind) |
 | | Secret detection and redaction (DLP) |
-| | Landlock filesystem restrictions |
+| | seccomp file monitoring |
 | | LLM request auditing |
 | | Complete audit logging |
 
@@ -105,7 +105,7 @@ Worker: sandbox.exec("agentsh exec --root=/workspace demo -- /bin/bash -c 'sudo 
                      |
                      v
             +-------------------+
-            |  agentsh server   |  Policy evaluation + Landlock
+            |  agentsh server   |  Policy evaluation + ptrace
             |  (pre-warmed)     |  + seccomp enforcement
             +--------+----------+
                      |
@@ -123,13 +123,13 @@ The agentsh server is pre-warmed via an `/internal/start-agentsh` endpoint durin
 
 | Capability | Status | Notes |
 |------------|--------|-------|
-| seccomp | Working | Full seccomp including `seccomp_user_notify` |
-| seccomp_user_notify | Working | Syscall interception for command and file monitoring (kernel 5.0+) |
-| seccomp file_monitor | Working | Monitor-only mode; Landlock handles enforcement |
-| Landlock | Working | ABI v5 — kernel-enforced filesystem access control (Linux 5.13+) |
+| ptrace | Working | Syscall-level enforcement: execve, file, network, signal interception |
+| seccomp | Working | File monitoring via `seccomp_user_notify` (monitor-only, ptrace enforces) |
+| seccomp prefilter | Working | BPF pre-filter reduces ptrace overhead (only 7 syscalls trap) |
 | Network proxy | Working | Domain/IP/port filtering via agentsh proxy |
 | DLP | Working | Secret detection and redaction in LLM traffic |
 | Audit logging | Working | All operations logged |
+| Landlock | Not available | Firecracker kernel reports `landlock_abi: v0` |
 | FUSE | Not available | Firecracker seccomp blocks `mount()` syscall |
 | cgroups | Not available | Read-only in Firecracker containers |
 | PID namespace | Not available | Not available in Firecracker config |
@@ -166,13 +166,13 @@ This section describes what Cloudflare can enable on their infrastructure to unl
 | FUSE | **High** -- enables file interception, soft-delete, symlink protection | Blocked (`mount()` denied) | Allow `mount()` in Firecracker seccomp |
 | PID namespace | Low -- process isolation | Not available | Allow `CLONE_NEWPID` |
 
-With FUSE enabled, protection would increase from ~80% to ~95%.
+With FUSE enabled, agentsh would gain VFS-level file interception, soft-delete quarantine, and symlink escape prevention.
 
 ## Configuration
 
 Security policy is defined in two files:
 
-- **`config/agentsh.yaml`** -- Server configuration: network interception, [DLP patterns](https://www.agentsh.org/docs/#llm-proxy), LLM proxy, [FUSE settings](https://www.agentsh.org/docs/#fuse), [Landlock](https://www.agentsh.org/docs/#landlock), [seccomp](https://www.agentsh.org/docs/#seccomp)
+- **`config/agentsh.yaml`** -- Server configuration: [ptrace](https://www.agentsh.org/docs/#ptrace) enforcement, network interception, [DLP patterns](https://www.agentsh.org/docs/#llm-proxy), LLM proxy, [seccomp](https://www.agentsh.org/docs/#seccomp) file monitoring
 - **`policies/default.yaml`** -- [Policy rules](https://www.agentsh.org/docs/#policy-reference): [command rules](https://www.agentsh.org/docs/#command-rules), [network rules](https://www.agentsh.org/docs/#network-rules), [file rules](https://www.agentsh.org/docs/#file-rules)
 
 See the [agentsh documentation](https://www.agentsh.org/docs/) for the full policy reference.
@@ -182,8 +182,8 @@ See the [agentsh documentation](https://www.agentsh.org/docs/) for the full poli
 ```
 agentsh-cloudflare/
 ├── src/index.ts             # Cloudflare Worker (API routes, agentsh exec wrapping)
-├── Dockerfile               # Container image with agentsh v0.14.0
-├── config/agentsh.yaml      # Server config (Landlock, seccomp, DLP, network)
+├── Dockerfile               # Container image with agentsh v0.16.4
+├── config/agentsh.yaml      # Server config (ptrace, seccomp, DLP, network)
 ├── policies/default.yaml    # Security policy (commands, network, files)
 ├── systemd/agentsh.service  # Systemd service for agentsh server
 ├── scripts/rc.local         # Fallback startup script
@@ -215,14 +215,14 @@ The test suite creates a Cloudflare Container and runs 71 security tests across 
 - **Blocked commands** -- nc, nmap, cloud metadata curl
 - **Command blocking** -- sudo, su, ssh, scp, shutdown, mount, nc, nmap, killall, pkill
 - **Privilege escalation** -- sudo id, sudo cat shadow, su root, pkexec, shadow read, sudoers write
-- **Filesystem protection** -- workspace writes allowed; /etc/passwd, /etc/shadow, /usr/bin, config overwrite blocked
+- **Filesystem protection** -- workspace writes allowed; /etc/passwd, /etc/shadow, /usr/bin, /etc/agentsh config overwrite blocked
 - **Cloud metadata** -- AWS, GCP, Azure, DigitalOcean, Alibaba, Oracle metadata endpoints blocked
 - **SSRF prevention** -- All RFC 1918 ranges, link-local addresses blocked; external HTTPS allowed
 - **Dev tools** -- Python, Node.js, Bun, git, curl, pip3, pipes all working
 - **DLP redaction** -- Fake OpenAI key, AWS key, GitHub PAT, email/phone detection
 
 ```bash
-npm test       # 71 tests across 11 files (~10s with warm sandbox)
+npm test       # 71 tests across 11 files (~38s with warm sandbox)
 ```
 
 ## Demo Endpoints
@@ -233,7 +233,7 @@ npm test       # 71 tests across 11 files (~10s with warm sandbox)
 | GET | `/demo/blocked` | 3 | Policy-blocked: nc, nmap, metadata curl |
 | GET | `/demo/commands` | 10 | Full command blocking: sudo, su, ssh, scp, shutdown, mount, nc, nmap, killall, pkill |
 | GET | `/demo/privilege-escalation` | 6 | Privilege escalation prevention |
-| GET | `/demo/filesystem` | 8 | Filesystem protection (Landlock) |
+| GET | `/demo/filesystem` | 8 | Filesystem protection (ptrace file enforcement) |
 | GET | `/demo/cloud-metadata` | 6 | AWS, GCP, Azure, DigitalOcean, Alibaba, Oracle |
 | GET | `/demo/ssrf` | 9 | RFC 1918 ranges, link-local, external allowed |
 | GET | `/demo/devtools` | 10 | Python, Node.js, Bun, git, curl, pip3, pipes |
@@ -264,11 +264,12 @@ Update the `CACHE_BUST` ARG in `Dockerfile` when config files change, since Dock
 | Property | Value |
 |----------|-------|
 | Base Image | `cloudflare/sandbox:0.7.2-python` |
-| VM Type | Firecracker (`basic`: 0.25 vCPU, 1GB RAM, 4GB disk) |
+| VM Type | Firecracker (`standard-1`: 1 vCPU, 2GB RAM, 8GB disk) |
 | Python | 3.11 |
 | Node.js | 20 |
 | Bun | Available |
-| agentsh | v0.14.0 (`.deb` package) |
+| agentsh | v0.16.4 (`.deb` package) |
+| Enforcement | ptrace (execve, file, network, signal) + seccomp (file monitor) |
 | Workspace | `/workspace` |
 
 ## Related Projects

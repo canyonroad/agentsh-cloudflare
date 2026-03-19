@@ -676,7 +676,7 @@ export default {
 
     try {
       // Get sandbox instance (shared across requests for demo)
-      const sandbox = getSandbox(env.SANDBOX, 'demo-sandbox-v2');
+      const sandbox = getSandbox(env.SANDBOX, 'demo-sandbox-v20');
 
       // Route handling
       if (path === '/' || path === '') {
@@ -1083,12 +1083,12 @@ async function handleDemoPrivilegeEscalation(
 ): Promise<Response> {
   // Run all command-level and file-level checks in parallel
   const [sudoId, sudoCat, suRoot, pkexec, readShadow, writeSudoers] = await runParallel([
-    () => executeInSandbox(sandbox, 'sudo id', 15000),
-    () => executeInSandbox(sandbox, 'sudo cat /etc/shadow', 15000),
-    () => executeInSandbox(sandbox, 'su - root -c whoami', 15000),
-    () => executeInSandbox(sandbox, 'pkexec cat /etc/shadow 2>&1', 15000),
-    () => executeInSandbox(sandbox, 'cat /etc/shadow 2>&1', 15000),
-    () => executeInSandbox(sandbox, 'echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers 2>&1', 15000),
+    () => executeInSandbox(sandbox, 'sudo id', 60000),
+    () => executeInSandbox(sandbox, 'sudo cat /etc/shadow', 60000),
+    () => executeInSandbox(sandbox, 'su - root -c whoami', 60000),
+    () => executeInSandbox(sandbox, 'pkexec cat /etc/shadow 2>&1', 60000),
+    () => executeInSandbox(sandbox, 'cat /etc/shadow 2>&1', 60000),
+    () => executeInSandbox(sandbox, 'echo "agent ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers 2>&1', 60000),
   ]);
 
   const results: DemoResult[] = [
@@ -1121,6 +1121,19 @@ async function handleDemoStatus(
     { cmd: 'head -5 /etc/agentsh/policies/default.yaml', desc: 'Policy file header' },
     { cmd: 'agentsh detect 2>&1 | grep -i seccomp || echo "seccomp status not available"', desc: 'Seccomp status' },
     { cmd: 'uname -r', desc: 'Kernel version' },
+    { cmd: 'cat /proc/sys/kernel/yama/ptrace_scope 2>&1', desc: 'ptrace_scope (Yama LSM)' },
+    { cmd: 'grep -i cap /proc/self/status 2>&1 || echo "caps not available"', desc: 'Process capabilities' },
+    { cmd: 'python3 -c "import ctypes,os; libc=ctypes.CDLL(None); PTRACE_TRACEME=0; r=libc.ptrace(PTRACE_TRACEME,0,0,0); print(f\'ptrace TRACEME: rc={r} errno={ctypes.get_errno()}\')" 2>&1 || echo "ptrace test failed"', desc: 'ptrace TRACEME test' },
+    { cmd: 'strace -e trace=write echo hello 2>&1 || echo "strace failed: $?"', desc: 'strace test (ptrace attach)' },
+    { cmd: 'agentsh config show 2>&1 | python3 -c "import json,sys; d=json.load(sys.stdin); p=d.get(\'Sandbox\',{}).get(\'Ptrace\',{}); print(json.dumps(p,indent=2))"', desc: 'Ptrace config (resolved)' },
+    { cmd: 'agentsh config show 2>&1 | python3 -c "import json,sys; d=json.load(sys.stdin); s=d.get(\'Sandbox\',{}).get(\'Seccomp\',{}).get(\'Syscalls\',{}); print(json.dumps(s,indent=2))"', desc: 'Seccomp syscalls config' },
+    { cmd: 'agentsh config show 2>&1 | python3 -c "import json,sys; d=json.load(sys.stdin); s=d.get(\'Security\',{}); print(json.dumps(s,indent=2))"', desc: 'Security mode config' },
+    { cmd: 'agentsh config show 2>&1 | python3 -c "import json,sys; d=json.load(sys.stdin); s=d.get(\'DLP\',{}); del s[\'CustomPatterns\']; print(json.dumps(s,indent=2))"', desc: 'DLP config' },
+    { cmd: 'grep -A 20 "ptrace:" /etc/agentsh/config.yaml', desc: 'ptrace section in config file' },
+    { cmd: 'grep -A 15 "seccomp:" /etc/agentsh/config.yaml | head -20', desc: 'seccomp section in config file' },
+    { cmd: 'agentsh events query --session demo 2>&1 | head -40 || echo "events query failed"', desc: 'Recent audit events' },
+    { cmd: 'agentsh debug stats demo 2>&1 | head -30', desc: 'Session stats' },
+    { cmd: 'ls -la /var/lib/agentsh/ 2>&1 && ls -la /var/lib/agentsh/sessions/ 2>&1', desc: 'agentsh data dir' },
   ];
 
   const statusResults = await runParallel(
@@ -1206,6 +1219,30 @@ async function runParallel<T>(
   return results;
 }
 
+// Track whether the agentsh server has been started in this sandbox instance
+let agentshServerStarted = false;
+
+async function ensureAgentshServer(sandbox: SandboxInstance): Promise<void> {
+  if (agentshServerStarted) return;
+
+  // Start the server in background
+  await executeRaw(sandbox, 'agentsh server --config /etc/agentsh/config.yaml &', 10000);
+
+  // Poll until healthy (up to 120s)
+  for (let i = 0; i < 120; i++) {
+    const health = await executeRaw(
+      sandbox,
+      'curl -sf http://127.0.0.1:18080/health 2>/dev/null && echo "OK" || echo "NOT_READY"',
+      5000,
+    );
+    if (health.stdout.includes('OK')) {
+      agentshServerStarted = true;
+      return;
+    }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+}
+
 async function executeInSandbox(
   sandbox: SandboxInstance,
   command: string,
@@ -1215,9 +1252,12 @@ async function executeInSandbox(
   const maxRetries = 1;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const actualCommand = useAgentsh
-        ? `agentsh exec --root=/workspace demo -- /bin/bash -c ${JSON.stringify(command)}`
-        : command;
+      let actualCommand: string;
+      if (useAgentsh) {
+        actualCommand = `agentsh exec --root=/workspace demo -- /bin/bash -c ${JSON.stringify(command)}`;
+      } else {
+        actualCommand = command;
+      }
 
       const result = await sandbox.exec(actualCommand, { timeout });
 
