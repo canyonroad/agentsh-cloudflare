@@ -61,7 +61,7 @@ sandbox:
       enabled: false    # mutually exclusive with ptrace
     file_monitor:
       enabled: true
-      enforce_without_fuse: false  # monitor-only (no FUSE on Firecracker)
+      enforce_without_fuse: true  # enforce file rules via seccomp (no FUSE on Firecracker)
 
   ptrace:
     enabled: true
