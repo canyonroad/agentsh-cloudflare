@@ -136,19 +136,21 @@ The agentsh server is pre-warmed via an `/internal/start-agentsh` endpoint durin
 
 ## For Cloudflare Engineers: What to Enable
 
-This section describes what Cloudflare can enable on their infrastructure to unlock full agentsh protection.
+**Note**: All core security enforcement works today using ptrace + seccomp. ptrace intercepts syscalls (execve, file I/O, network, signals) and enforces policy rules. seccomp's `file_monitor` with `enforce_without_fuse: true` provides a second layer of file enforcement via `seccomp_user_notify`. Together they achieve **100% Protection Score** with no Cloudflare-side changes needed.
 
-### FUSE (`/dev/fuse`) -- High Impact
+The features below are optional enhancements, not requirements.
 
-**Current state**: The Firecracker VM has `CAP_SYS_ADMIN` and `fusermount3` is installed, but the Firecracker seccomp profile blocks the `mount()` syscall. When agentsh tries to set up a FUSE overlay filesystem, the mount call hangs indefinitely, making the server unresponsive.
+### FUSE (`/dev/fuse`) -- Nice to Have
 
-**What it unlocks**:
-- **VFS-level file interception** -- agentsh mounts a FUSE overlay on the workspace, intercepting every `open()`, `write()`, `unlink()`, `mkdir()` at the filesystem level. This is far more comprehensive than permission-based blocking.
-- **Soft-delete quarantine** -- When an agent runs `rm`, the file is moved to a quarantine directory instead of being deleted. Files can be listed with `agentsh trash list` and restored with `agentsh trash restore`.
-- **Symlink escape prevention** -- FUSE intercepts symlink traversal, blocking agents from creating symlinks to sensitive paths like `/etc/shadow`.
-- **Credential file blocking** -- FUSE can block reads to `~/.ssh/id_rsa`, `~/.aws/credentials`, `/proc/1/environ` regardless of Unix permissions.
+**Current state**: The Firecracker VM has `CAP_SYS_ADMIN` and `fusermount3` is installed, but the Firecracker seccomp profile blocks the `mount()` syscall. agentsh's FUSE overlay cannot mount.
 
-**How to enable**: Allow the `mount()` syscall in the Firecracker seccomp profile, or expose `/dev/fuse` (character device 10,229) with appropriate permissions. This is a standard Firecracker configuration -- other Firecracker-based platforms (E2B, etc.) expose it by default.
+**What it would add** (beyond what ptrace + seccomp already enforce):
+- **Soft-delete quarantine** -- `rm` moves files to a quarantine directory instead of deleting. Files can be restored with `agentsh trash restore`. Without FUSE, deletes are blocked or permanent — there is no undo.
+- **VFS-level overlay** -- Interception at the filesystem layer rather than the syscall layer. More resilient against edge cases like direct file descriptor manipulation.
+
+**Not needed for**: File read/write blocking (ptrace + seccomp handle this), credential file protection, symlink restrictions.
+
+**How to enable**: Allow `mount()` in the Firecracker seccomp profile, or expose `/dev/fuse` (character device 10,229). Standard Firecracker configuration — other platforms (E2B, etc.) expose it by default.
 
 ### PID Namespace -- Low Impact
 
@@ -157,16 +159,14 @@ This section describes what Cloudflare can enable on their infrastructure to unl
 **What it unlocks**:
 - **Process isolation** -- agentsh can create sessions in isolated PID namespaces, preventing agents from seeing or signaling other processes.
 
-**How to enable**: Allow `CLONE_NEWPID` in the Firecracker seccomp filter, or configure PID namespace support in the VM.
+**How to enable**: Allow `CLONE_NEWPID` in the Firecracker seccomp filter.
 
 ### Summary
 
 | Feature | Impact | Current | What's Needed |
 |---------|--------|---------|---------------|
-| FUSE | **High** -- enables file interception, soft-delete, symlink protection | Blocked (`mount()` denied) | Allow `mount()` in Firecracker seccomp |
-| PID namespace | Low -- process isolation | Not available | Allow `CLONE_NEWPID` |
-
-With FUSE enabled, agentsh would gain VFS-level file interception, soft-delete quarantine, and symlink escape prevention.
+| FUSE | Nice to have — adds soft-delete quarantine, VFS overlay | Blocked (`mount()` denied) | Allow `mount()` in Firecracker seccomp |
+| PID namespace | Low — process isolation | Not available | Allow `CLONE_NEWPID` |
 
 ## Configuration
 
