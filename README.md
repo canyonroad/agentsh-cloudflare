@@ -1,6 +1,6 @@
 # agentsh + Cloudflare Containers
 
-Runtime security governance for AI agents using [agentsh](https://github.com/canyonroad/agentsh) v0.16.6 with [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
+Runtime security governance for AI agents using [agentsh](https://github.com/canyonroad/agentsh) v0.16.8 with [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
 
 ## Why agentsh + Cloudflare Containers?
 
@@ -182,7 +182,7 @@ See the [agentsh documentation](https://www.agentsh.org/docs/) for the full poli
 ```
 agentsh-cloudflare/
 ├── src/index.ts             # Cloudflare Worker (API routes, agentsh exec wrapping)
-├── Dockerfile               # Container image with agentsh v0.16.6
+├── Dockerfile               # Container image with agentsh v0.16.8
 ├── config/agentsh.yaml      # Server config (ptrace, seccomp, DLP, network)
 ├── policies/default.yaml    # Security policy (commands, network, files)
 ├── systemd/agentsh.service  # Systemd service for agentsh server
@@ -268,7 +268,7 @@ Update the `CACHE_BUST` ARG in `Dockerfile` when config files change, since Dock
 | Python | 3.11 |
 | Node.js | 20 |
 | Bun | Available |
-| agentsh | v0.16.6 (`.deb` package) |
+| agentsh | v0.16.8 (`.deb` package) |
 | Enforcement | ptrace (execve, file, network, signal) + seccomp (file enforcement) |
 | Workspace | `/workspace` |
 
