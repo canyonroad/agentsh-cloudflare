@@ -676,7 +676,7 @@ export default {
 
     try {
       // Get sandbox instance (shared across requests for demo)
-      const sandbox = getSandbox(env.SANDBOX, 'demo-sandbox-v29');
+      const sandbox = getSandbox(env.SANDBOX, 'demo-sandbox-v40');
 
       // Route handling
       if (path === '/' || path === '') {

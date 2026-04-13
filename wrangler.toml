@@ -22,7 +22,7 @@ new_sqlite_classes = ["Sandbox"]
 # KV namespace for rate limiting
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
-id = "755d7419e3294b0c9111e64ca64ee691"
+id = "e98e1b52307f46dfa2894c04e4637bd0"
 
 # Environment variables
 [vars]

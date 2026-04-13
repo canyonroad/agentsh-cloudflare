@@ -1,5 +1,7 @@
 # agentsh Server Configuration for Cloudflare Sandbox
-# ptrace + seccomp enforcement — no FUSE, no Landlock
+# v0.18.0 — ptrace (execve-only) for command control, seccomp-notify for file protection
+# ptrace trace.file/network/signal must be false (v0.18.0 unix_sockets constraint)
+# FUSE removed from container (mount() hangs on Firecracker)
 
 server:
   http:
@@ -35,51 +37,37 @@ sandbox:
   enabled: true
   allow_degraded: true
 
-  limits:
-    max_memory_mb: 2048
-    max_cpu_percent: 100
-    max_processes: 100
-
+  # FUSE mount() hangs on Firecracker — disable to force seccomp-notify for file protection
   fuse:
     enabled: false
 
-  network:
-    enabled: true
-    intercept_mode: "all"
-    proxy_listen_addr: "127.0.0.1:0"
+  # Inject BASH_ENV to disable builtins that bypass seccomp
+  env_inject:
+    BASH_ENV: "/usr/lib/agentsh/bash_startup.sh"
 
-  cgroups:
-    enabled: false
-
-  unix_sockets:
-    enabled: false      # mutually exclusive with ptrace
-
+  # seccomp-notify: file enforcement via seccomp_user_notify
+  # seccomp-execve disabled — ptrace handles command control instead
   seccomp:
     enabled: true
     mode: "enforce"
     execve:
       enabled: false    # mutually exclusive with ptrace
-    file_monitor:
-      enabled: true
-      enforce_without_fuse: true  # enforce file rules via seccomp (no FUSE on Firecracker)
 
+  # ptrace: execve-only command control
+  # trace.file/network/signal must be false (v0.18.0 unix_sockets constraint)
   ptrace:
     enabled: true
     attach_mode: "children"
     on_attach_failure: "fail_open"
-    mask_tracer_pid: "off"
     trace:
       execve: true
-      file: true
-      network: true
-      signal: true
+      file: false
+      network: false
+      signal: false
     performance:
       seccomp_prefilter: true
       max_tracees: 100
       max_hold_ms: 5000
-
-landlock:
-  enabled: false
 
 proxy:
   mode: "embedded"

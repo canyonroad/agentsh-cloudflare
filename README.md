@@ -1,6 +1,6 @@
 # agentsh + Cloudflare Containers
 
-Runtime security governance for AI agents using [agentsh](https://github.com/canyonroad/agentsh) v0.16.9 with [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
+Runtime security governance for AI agents using [agentsh](https://github.com/canyonroad/agentsh) v0.18.0 with [Cloudflare Containers](https://developers.cloudflare.com/containers/) (Firecracker VMs).
 
 ## Why agentsh + Cloudflare Containers?
 
@@ -25,8 +25,8 @@ The Cloudflare Worker runs in a **V8 isolate** — it handles HTTP requests, ren
 |  (V8 isolate)             |         |                                             |
 |                           |  exec   |  +---------------------------------------+  |
 |  - HTTP routing           | ------> |  |  agentsh (Governance)                 |  |
-|  - HTML/JSON responses    |         |  |  - ptrace (syscall-level enforcement) |  |
-|  - getSandbox() API       |         |  |  - seccomp (file enforcement)         |  |
+|  - HTML/JSON responses    |         |  |  - ptrace (execve command control)    |  |
+|  - getSandbox() API       |         |  |  - seccomp-notify (file enforcement)  |  |
 |  - Rate limiting          |         |  |  - Network proxy (domain filtering)   |  |
 |  - Turnstile verification |         |  |  - DLP (secret redaction)             |  |
 |                           |         |  |  - Audit logging                      |  |
@@ -58,12 +58,12 @@ agentsh adds the governance layer that controls what agents can do inside the sa
 | Cloudflare Provides | agentsh Adds |
 |---------------------|--------------|
 | Compute isolation (Firecracker) | Command blocking (ptrace execve interception) |
-| Process sandboxing | File I/O policy (ptrace file syscall enforcement) |
+| Process sandboxing | File I/O policy (seccomp-notify file syscall enforcement) |
 | API access to sandbox | Domain allowlist/blocklist |
 | Persistent environment | Cloud metadata blocking |
 | | Network syscall interception (connect/bind) |
 | | Secret detection and redaction (DLP) |
-| | seccomp file enforcement |
+| | seccomp file enforcement (seccomp_user_notify) |
 | | LLM request auditing |
 | | Complete audit logging |
 
@@ -105,8 +105,8 @@ Worker: sandbox.exec("agentsh exec --root=/workspace demo -- /bin/bash -c 'sudo 
                      |
                      v
             +-------------------+
-            |  agentsh server   |  Policy evaluation + ptrace
-            |  (pre-warmed)     |  + seccomp file enforcement
+            |  agentsh server   |  Policy evaluation + ptrace (execve)
+            |  (pre-warmed)     |  + seccomp-notify (file enforcement)
             +--------+----------+
                      |
               +------+------+
@@ -123,26 +123,26 @@ The agentsh server is pre-warmed via an `/internal/start-agentsh` endpoint durin
 
 | Capability | Status | Notes |
 |------------|--------|-------|
-| ptrace | Working | Syscall-level enforcement: execve, file, network, signal interception |
-| seccomp | Working | File enforcement via `seccomp_user_notify` (`enforce_without_fuse: true`) |
+| ptrace | Working | Execve-only command control (v0.18.0: file/network/signal traced by seccomp) |
+| seccomp | Working | File enforcement via `seccomp_user_notify` (seccomp-notify) |
 | seccomp prefilter | Working | BPF pre-filter reduces ptrace overhead (only 7 syscalls trap) |
 | Network proxy | Working | Domain/IP/port filtering via agentsh proxy |
 | DLP | Working | Secret detection and redaction in LLM traffic |
 | Audit logging | Working | All operations logged |
 | Landlock | Not available | Firecracker kernel reports `landlock_abi: v0` |
-| FUSE | Not available | Firecracker seccomp blocks `mount()` syscall |
+| FUSE | Not available | `mount()` hangs on Firecracker; v0.18.0 detects `fuse: ✓ new-api` but disabled in config |
 | cgroups | Not available | Read-only in Firecracker containers |
 | PID namespace | Not available | Not available in Firecracker config |
 
 ## For Cloudflare Engineers: What to Enable
 
-**Note**: All core security enforcement works today using ptrace + seccomp. ptrace intercepts syscalls (execve, file I/O, network, signals) and enforces policy rules. seccomp's `file_monitor` with `enforce_without_fuse: true` provides a second layer of file enforcement via `seccomp_user_notify`. Together they achieve **100% Protection Score** with no Cloudflare-side changes needed.
+**Note**: All core security enforcement works today using ptrace + seccomp. ptrace intercepts execve syscalls for command control. seccomp-notify (`seccomp_user_notify`) enforces file rules by intercepting file syscalls (openat, faccessat2, newfstatat, etc.). Together they achieve full command blocking and file protection with no Cloudflare-side changes needed. Protection Score: 65/100 (minimal mode — network and isolation backends unavailable on Firecracker).
 
 The features below are optional enhancements, not requirements.
 
 ### FUSE (`/dev/fuse`) -- Nice to Have
 
-**Current state**: The Firecracker VM has `CAP_SYS_ADMIN` and `fusermount3` is installed, but the Firecracker seccomp profile blocks the `mount()` syscall. agentsh's FUSE overlay cannot mount.
+**Current state**: The Firecracker VM has `CAP_SYS_ADMIN` and agentsh v0.18.0 detects FUSE support via the new `fsopen/fsmount/move_mount` API (`fuse: ✓ new-api`). However, the traditional `mount()` syscall hangs on Firecracker, and FUSE is disabled in config (`fuse.enabled: false`). FUSE packages are removed from the container image.
 
 **What it would add** (beyond what ptrace + seccomp already enforce):
 - **Soft-delete quarantine** -- `rm` moves files to a quarantine directory instead of deleting. Files can be restored with `agentsh trash restore`. Without FUSE, deletes are blocked or permanent — there is no undo.
@@ -172,7 +172,7 @@ The features below are optional enhancements, not requirements.
 
 Security policy is defined in two files:
 
-- **`config/agentsh.yaml`** -- Server configuration: [ptrace](https://www.agentsh.org/docs/#ptrace) enforcement, network interception, [DLP patterns](https://www.agentsh.org/docs/#llm-proxy), LLM proxy, [seccomp](https://www.agentsh.org/docs/#seccomp) file enforcement
+- **`config/agentsh.yaml`** -- Server configuration: [ptrace](https://www.agentsh.org/docs/#ptrace) (execve-only command control), [seccomp-notify](https://www.agentsh.org/docs/#seccomp) (file enforcement), BASH_ENV injection, network interception, [DLP patterns](https://www.agentsh.org/docs/#llm-proxy), LLM proxy
 - **`policies/default.yaml`** -- [Policy rules](https://www.agentsh.org/docs/#policy-reference): [command rules](https://www.agentsh.org/docs/#command-rules), [network rules](https://www.agentsh.org/docs/#network-rules), [file rules](https://www.agentsh.org/docs/#file-rules)
 
 See the [agentsh documentation](https://www.agentsh.org/docs/) for the full policy reference.
@@ -182,8 +182,8 @@ See the [agentsh documentation](https://www.agentsh.org/docs/) for the full poli
 ```
 agentsh-cloudflare/
 ├── src/index.ts             # Cloudflare Worker (API routes, agentsh exec wrapping)
-├── Dockerfile               # Container image with agentsh v0.16.9
-├── config/agentsh.yaml      # Server config (ptrace, seccomp, DLP, network)
+├── Dockerfile               # Container image with agentsh v0.18.0
+├── config/agentsh.yaml      # Server config (ptrace execve-only, seccomp-notify, DLP, network)
 ├── policies/default.yaml    # Security policy (commands, network, files)
 ├── systemd/agentsh.service  # Systemd service for agentsh server
 ├── scripts/rc.local         # Fallback startup script
@@ -257,7 +257,7 @@ npx wrangler containers delete <app-id>
 npm run deploy
 ```
 
-Update the `CACHE_BUST` ARG in `Dockerfile` when config files change, since Docker layer caching may serve stale config.
+Update the `CACHE_BUST` ARG in `Dockerfile` when config files change. **Critical**: Use `docker builder prune --all -f` (not just `-f`) before deploying config changes — Docker's content-addressable cache can serve stale COPY layers even with a new `CACHE_BUST` value.
 
 ## Cloudflare Container Environment
 
@@ -268,8 +268,8 @@ Update the `CACHE_BUST` ARG in `Dockerfile` when config files change, since Dock
 | Python | 3.11 |
 | Node.js | 20 |
 | Bun | Available |
-| agentsh | v0.16.9 (`.deb` package) |
-| Enforcement | ptrace (execve, file, network, signal) + seccomp (file enforcement) |
+| agentsh | v0.18.0 (`.deb` package) |
+| Enforcement | ptrace (execve-only command control) + seccomp-notify (file enforcement) |
 | Workspace | `/workspace` |
 
 ## Related Projects

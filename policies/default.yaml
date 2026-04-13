@@ -83,17 +83,23 @@ file_rules:
   - name: allow-system-read
     description: Read and execute access to system paths
     paths:
+      - "/"
       - "/usr/**"
       - "/lib/**"
       - "/lib64/**"
       - "/bin/**"
       - "/sbin/**"
+      - "/opt/**"
+      - "/run/**"
+      - "/var/**"
     operations:
       - read
       - open
       - stat
       - list
       - readlink
+      - access
+      - execute
     decision: allow
 
   # Config files - minimal read
@@ -126,6 +132,7 @@ file_rules:
       - open
       - stat
       - readlink
+      - access
     decision: allow
 
   # Device files - full access (needed for /dev/urandom, /dev/null, etc.)
@@ -160,6 +167,7 @@ file_rules:
       - stat
       - list
       - readlink
+      - access
     decision: allow
 
   # Block sensitive paths
@@ -174,13 +182,20 @@ file_rules:
     decision: deny
     message: "BLOCKED: Access to sensitive file: {{.Path}}"
 
-  # Default deny for everything else
+  # Default deny for everything else (write operations only - reads are implicitly allowed)
   - name: default-deny-files
-    description: Deny all other file operations
+    description: Deny all other file write operations
     paths:
       - "**"
     operations:
-      - "*"
+      - write
+      - create
+      - chmod
+      - chown
+      - delete
+      - rename
+      - mkdir
+      - rmdir
     decision: deny
 
 # =============================================================================

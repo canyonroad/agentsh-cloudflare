@@ -5,7 +5,7 @@
 FROM docker.io/cloudflare/sandbox:0.7.2-python
 
 # Cache buster to force rebuild
-ARG CACHE_BUST=20260329-agentsh-0.16.9-v1
+ARG CACHE_BUST=20260413-agentsh-0.18.0-v9
 RUN echo "Cache bust: ${CACHE_BUST}"
 
 ARG AGENTSH_REPO=canyonroad/agentsh
@@ -22,16 +22,18 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV AGENTSH_CLIENT_TIMEOUT=5m
 
 # Install additional dependencies needed for agentsh
+# Remove fuse entirely — FUSE mount() hangs on Firecracker, forces seccomp-notify for file protection
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         -o Dpkg::Options::="--force-confnew" \
         libseccomp2 \
-        fuse3 \
         strace \
+    && apt-get remove -y fuse libfuse2 2>/dev/null || true \
+    && rm -f /usr/bin/fusermount /usr/bin/fusermount3 /dev/fuse \
     && rm -rf /var/lib/apt/lists/*
 
 # Download and install agentsh release
-ARG AGENTSH_VERSION=0.16.9
+ARG AGENTSH_VERSION=0.18.0
 RUN set -eux; \
     deb="agentsh_${AGENTSH_VERSION}_linux_${DEB_ARCH}.deb"; \
     url="https://github.com/${AGENTSH_REPO}/releases/download/v${AGENTSH_VERSION}/${deb}"; \
