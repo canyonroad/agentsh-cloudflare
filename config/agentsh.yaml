@@ -1,6 +1,6 @@
 # agentsh Server Configuration for Cloudflare Sandbox
-# v0.18.0 — ptrace (execve-only) for command control, seccomp-notify for file protection
-# ptrace trace.file/network/signal must be false (v0.18.0 unix_sockets constraint)
+# v0.18.3 — ptrace (execve-only) for command control, seccomp-notify for file protection
+# ptrace trace.file/network/signal must be false (v0.18.3 unix_sockets constraint)
 # FUSE removed from container (mount() hangs on Firecracker)
 
 server:
@@ -54,7 +54,7 @@ sandbox:
       enabled: false    # mutually exclusive with ptrace
 
   # ptrace: execve-only command control
-  # trace.file/network/signal must be false (v0.18.0 unix_sockets constraint)
+  # trace.file/network/signal must be false (v0.18.3 unix_sockets constraint)
   ptrace:
     enabled: true
     attach_mode: "children"

@@ -937,20 +937,20 @@ async function handleDemoSSRF(
   // SSRF attack vectors - focus on policy-blocked private networks
   const ssrfVectors = [
     // These are blocked by policy
-    { cmd: 'curl -s --connect-timeout 2 http://169.254.169.254/ 2>&1', desc: 'AWS Metadata (169.254.169.254)', category: 'Cloud Metadata', policyBlocked: true },
-    { cmd: 'curl -s --connect-timeout 2 http://10.0.0.1/ 2>&1', desc: '10.0.0.1 (Class A Private)', category: 'Private Network', policyBlocked: true },
-    { cmd: 'curl -s --connect-timeout 2 http://10.255.255.1/ 2>&1', desc: '10.255.255.1 (Class A Private)', category: 'Private Network', policyBlocked: true },
-    { cmd: 'curl -s --connect-timeout 2 http://172.16.0.1/ 2>&1', desc: '172.16.0.1 (Class B Private)', category: 'Private Network', policyBlocked: true },
-    { cmd: 'curl -s --connect-timeout 2 http://172.31.255.1/ 2>&1', desc: '172.31.255.1 (Class B Private)', category: 'Private Network', policyBlocked: true },
-    { cmd: 'curl -s --connect-timeout 2 http://192.168.1.1/ 2>&1', desc: '192.168.1.1 (Class C Private)', category: 'Private Network', policyBlocked: true },
-    { cmd: 'curl -s --connect-timeout 2 http://192.168.255.1/ 2>&1', desc: '192.168.255.1 (Class C Private)', category: 'Private Network', policyBlocked: true },
-    { cmd: 'curl -s --connect-timeout 2 http://169.254.1.1/ 2>&1', desc: '169.254.1.1 (Link-Local)', category: 'Link-Local', policyBlocked: true },
+    { args: ['curl', '-s', '--connect-timeout', '2', 'http://169.254.169.254:1/'], desc: 'AWS Metadata (169.254.169.254)', category: 'Cloud Metadata', policyBlocked: true },
+    { args: ['curl', '-s', '--connect-timeout', '2', 'http://10.0.0.1:1/'], desc: '10.0.0.1 (Class A Private)', category: 'Private Network', policyBlocked: true },
+    { args: ['curl', '-s', '--connect-timeout', '2', 'http://10.255.255.1:1/'], desc: '10.255.255.1 (Class A Private)', category: 'Private Network', policyBlocked: true },
+    { args: ['curl', '-s', '--connect-timeout', '2', 'http://172.16.0.1:1/'], desc: '172.16.0.1 (Class B Private)', category: 'Private Network', policyBlocked: true },
+    { args: ['curl', '-s', '--connect-timeout', '2', 'http://172.31.255.1:1/'], desc: '172.31.255.1 (Class B Private)', category: 'Private Network', policyBlocked: true },
+    { args: ['curl', '-s', '--connect-timeout', '2', 'http://192.168.1.1:1/'], desc: '192.168.1.1 (Class C Private)', category: 'Private Network', policyBlocked: true },
+    { args: ['curl', '-s', '--connect-timeout', '2', 'http://192.168.255.1:1/'], desc: '192.168.255.1 (Class C Private)', category: 'Private Network', policyBlocked: true },
+    { args: ['curl', '-s', '--connect-timeout', '2', 'http://169.254.1.1:1/'], desc: '169.254.1.1 (Link-Local)', category: 'Link-Local', policyBlocked: true },
     // Contrast with allowed external
-    { cmd: 'curl -s --connect-timeout 3 https://httpbin.org/ip 2>&1', desc: 'httpbin.org (External)', category: 'External', policyBlocked: false },
+    { args: ['curl', '-s', '--connect-timeout', '3', 'https://httpbin.org/ip'], desc: 'httpbin.org (External)', category: 'External', policyBlocked: false },
   ];
 
   const ssrfResults = await runParallel(
-    ssrfVectors.map(({ cmd }) => () => executeInSandbox(sandbox, cmd, 15000))
+    ssrfVectors.map(({ args }) => () => executeArgsInSandbox(sandbox, args, 15000))
   );
 
   const results: DemoResult[] = ssrfVectors.map(({ desc, category }, i) => ({
@@ -971,20 +971,20 @@ async function handleDemoDevTools(
 ): Promise<Response> {
   // Development tools that work in the sandbox
   const devToolCommands = [
-    { cmd: 'python3 --version', desc: 'Python version' },
-    { cmd: 'python3 -c "import json; print(json.dumps({\'hello\': \'world\'}))"', desc: 'Python JSON' },
-    { cmd: 'node --version', desc: 'Node.js version' },
-    { cmd: 'node -e "console.log(JSON.stringify({message: \'Hello from Node.js\'}))"', desc: 'Node.js inline (slow in Firecracker)' },
-    { cmd: 'bun --version', desc: 'Bun version' },
-    { cmd: 'pip3 list 2>/dev/null | head -10', desc: 'Python packages (first 10)' },
-    { cmd: 'which git && git --version', desc: 'Git version' },
-    { cmd: 'curl -s https://api.github.com/zen', desc: 'GitHub API (external HTTPS)' },
-    { cmd: 'echo "SELECT 1+1 AS result;" | python3 -c "import sys; print(sys.stdin.read())"', desc: 'Pipe operations' },
-    { cmd: 'ls -la /workspace', desc: 'Workspace directory' },
+    { args: ['python3', '--version'], desc: 'Python version' },
+    { args: ['python3', '-c', 'import json; print(json.dumps({"hello": "world"}))'], desc: 'Python JSON' },
+    { args: ['node', '--version'], desc: 'Node.js version' },
+    { args: ['node', '-e', 'console.log(JSON.stringify({message: "Hello from Node.js"}))'], desc: 'Node.js inline (slow in Firecracker)' },
+    { args: ['bun', '--version'], desc: 'Bun version' },
+    { args: ['pip3', 'list'], desc: 'Python packages (first 10)' },
+    { args: ['git', '--version'], desc: 'Git version' },
+    { args: ['curl', '-s', 'https://api.github.com/zen'], desc: 'GitHub API (external HTTPS)' },
+    { args: ['python3', '-c', 'print("SELECT 1+1 AS result;")'], desc: 'Pipe operations' },
+    { args: ['ls', '-la', '/workspace'], desc: 'Workspace directory' },
   ];
 
   const devToolResults = await runParallel(
-    devToolCommands.map(({ cmd }) => () => executeInSandbox(sandbox, cmd))
+    devToolCommands.map(({ args }) => () => executeArgsInSandbox(sandbox, args))
   );
 
   const results: DemoResult[] = devToolCommands.map(({ desc }, i) => ({
@@ -1007,17 +1007,17 @@ async function handleDemoFilesystem(
   const [detectResult, workspaceWrite, tmpWrite, etcPasswd, etcShadow,
          usrBinWrite, overwriteConfig, sudoersWrite] = await runParallel([
     () => executeRaw(sandbox, 'agentsh detect 2>&1 | grep -E "fuse|landlock|seccomp|Security Mode|Protection"'),
-    () => executeInSandbox(sandbox, 'echo "hello from agent" > /workspace/test.txt && cat /workspace/test.txt'),
-    () => executeInSandbox(sandbox, 'echo "temp data" > /tmp/test.txt && cat /tmp/test.txt'),
-    () => executeInSandbox(sandbox, 'echo "hacked" >> /etc/passwd 2>&1; echo "exit=$?"'),
-    () => executeInSandbox(sandbox, 'echo "hacked" >> /etc/shadow 2>&1; echo "exit=$?"'),
-    () => executeInSandbox(sandbox, 'touch /usr/bin/malware 2>&1; echo "exit=$?"'),
-    () => executeInSandbox(sandbox, 'echo "hacked" > /etc/agentsh/config.yaml 2>&1; echo "exit=$?"'),
-    () => executeInSandbox(sandbox, 'echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers 2>&1; echo "exit=$?"'),
+    () => executeArgsInSandbox(sandbox, ['python3', '-c', 'from pathlib import Path; p=Path("/workspace/test.txt"); p.write_text("hello from agent\\n"); print(p.read_text(), end="")']),
+    () => executeArgsInSandbox(sandbox, ['python3', '-c', 'from pathlib import Path; p=Path("/tmp/test.txt"); p.write_text("temp data\\n"); print(p.read_text(), end="")']),
+    () => executeArgsInSandbox(sandbox, ['python3', '-c', 'open("/etc/passwd", "a").write("hacked\\n")']),
+    () => executeArgsInSandbox(sandbox, ['python3', '-c', 'open("/etc/shadow", "a").write("hacked\\n")']),
+    () => executeArgsInSandbox(sandbox, ['python3', '-c', 'open("/usr/bin/malware", "w").write("hacked\\n")']),
+    () => executeArgsInSandbox(sandbox, ['python3', '-c', 'open("/etc/agentsh/config.yaml", "w").write("hacked\\n")']),
+    () => executeArgsInSandbox(sandbox, ['python3', '-c', 'open("/etc/sudoers", "w").write("agent ALL=(ALL) NOPASSWD:ALL\\n")']),
   ]);
 
   // Phase 2: Delete workspace file (depends on workspace write above)
-  const deleteFile = await executeInSandbox(sandbox, 'rm /workspace/test.txt 2>&1 && echo "deleted" && ls /workspace/test.txt 2>&1; echo "exit=$?"');
+  const deleteFile = await executeArgsInSandbox(sandbox, ['python3', '-c', 'import os; os.remove("/workspace/test.txt"); print("deleted")']);
 
   const results: DemoResult[] = [
     { command: 'agentsh detect (security capabilities)', result: detectResult },
@@ -1307,12 +1307,33 @@ async function executeInSandbox(
   return { success: false, stdout: '', stderr: 'Max retries exceeded', exitCode: -1, blocked: false };
 }
 
+function executeArgsInSandbox(
+  sandbox: SandboxInstance,
+  args: string[],
+  timeout: number = 60000
+): Promise<ExecuteResponse> {
+  const actualCommand = [
+    'agentsh',
+    'exec',
+    '--root=/workspace',
+    'demo',
+    '--',
+    ...args,
+  ].map(shellQuote).join(' ');
+
+  return executeInSandbox(sandbox, actualCommand, timeout, false);
+}
+
 function executeRaw(
   sandbox: SandboxInstance,
   command: string,
   timeout: number = 60000
 ): Promise<ExecuteResponse> {
   return executeInSandbox(sandbox, command, timeout, false);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function extractBlockMessage(output: string): string {
